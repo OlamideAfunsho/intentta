@@ -1,0 +1,66 @@
+-- Copyright (c) 2026 IntentTA contributors.
+-- SPDX-License-Identifier: Apache-2.0
+
+-- | The investor's redemption request.
+module IntentTA.Redemption.Intent where
+
+import Splice.Api.Token.AllocationV1 (Allocation)
+import Splice.Api.Token.MetadataV1 (AnyContractId)
+
+import IntentTA.Redemption.Approved (ApprovedRedemption(..), checkReservation)
+import IntentTA.Redemption.Reservation (ReservationSlot)
+import IntentTA.Redemption.Types
+
+-- | An investor-authorized request to redeem shares for cash.
+--
+-- Creating it moves nothing: the investor keeps their shares until
+-- settlement. It is not a governance proposal and gives the investor no
+-- vote, no proposer rights and no visibility into the committee.
+template InvestorIntent
+  with
+    terms : RedemptionTerms
+  where
+    signatory terms.investor
+    observer terms.issuer
+    ensure validTerms terms
+
+    -- | The investor withdraws the request before it is approved.
+    choice InvestorIntent_Cancel : ()
+      controller terms.investor
+      do pure ()
+
+    -- | The issuer approves the request, which consumes it.
+    --
+    -- This choice is safe to call directly, not only from
+    -- `ApproveRedemptionAction`: it refuses to create an approval unless it
+    -- is handed a policy-issued slot for exactly this request and a cash
+    -- reservation that funds exactly these terms. Because the choice is
+    -- consuming, a request can be approved at most once.
+    choice InvestorIntent_Approve : ContractId ApprovedRedemption
+      with
+        slotCid : ContractId ReservationSlot
+          -- ^ Proof that the issuer's policy limits were checked.
+        allocationCid : ContractId Allocation
+          -- ^ The cash reserved for the payout.
+      controller terms.issuer
+      do
+        now <- getTime
+        assertMsg "Redemption request has expired" (now < terms.expiresAt)
+
+        let intentRef : AnyContractId = coerceContractId self
+        slot <- fetch slotCid
+        assertMsg "Reservation slot belongs to another issuer" (slot.issuer == terms.issuer)
+        assertMsg "Reservation slot was issued for another request"
+          (slot.intentRef == intentRef && slot.terms == terms)
+        assertMsg "Reservation slot has expired" (now < slot.approvalExpiresAt)
+
+        checkReservation terms intentRef slot.approvalExpiresAt allocationCid
+
+        create ApprovedRedemption with
+          terms
+          keepers = slot.keepers
+          intentRef
+          slotCid
+          allocationCid
+          approvedAt = now
+          expiresAt = slot.approvalExpiresAt

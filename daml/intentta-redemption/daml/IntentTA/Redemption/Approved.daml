@@ -1,0 +1,184 @@
+-- Copyright (c) 2026 IntentTA contributors.
+-- SPDX-License-Identifier: Apache-2.0
+
+-- | The funded, single-use right to redeem, and the atomic settlement choice.
+module IntentTA.Redemption.Approved where
+
+import Splice.Api.Token.AllocationV1 (Allocation, AllocationView(..), Allocation_ExecuteTransfer(..))
+import Splice.Api.Token.HoldingV1 qualified as Api (Holding)
+import Splice.Api.Token.MetadataV1 (AnyContractId, ExtraArgs, emptyMetadata)
+import Utility.Registry.App.V0.Model.Burn (Burn(..), BurnOffer_Accept(..))
+import Utility.Registry.App.V0.Service.AllocationFactory (AllocationFactory, AllocationFactory_OfferBurn(..))
+import Utility.Registry.Holding.V0.Holding qualified as Registry (Holding)
+
+import IntentTA.Redemption.Cleanup (ReservationCleanup(..))
+import IntentTA.Redemption.Receipt (RedemptionReceipt(..))
+import IntentTA.Redemption.Reservation (ReservationSlot)
+import IntentTA.Redemption.Types
+
+-- | Check that a cash allocation is a genuine reservation for these terms.
+--
+-- Two things are checked. The allocation must be signed by the admin of the
+-- cash instrument, so it was created by that instrument's own registry code
+-- and not by a look-alike contract. And its specification must match the
+-- terms field by field, including the reference to the investor's request.
+checkReservation : RedemptionTerms -> AnyContractId -> Time -> ContractId Allocation -> Update ()
+checkReservation terms intentRef coverUntil allocationCid = do
+  allocation <- fetch allocationCid
+  assertMsg "Cash reservation is not signed by the cash instrument admin"
+    (terms.cashInstrument.admin `elem` signatory allocation)
+  let AllocationView{allocation = spec} = view allocation
+  case allocationMismatch terms intentRef coverUntil spec of
+    Some why -> abort ("Cash reservation does not match the redemption: " <> why)
+    None -> pure ()
+
+-- | An approved, funded redemption. Signed by both sides: the issuer through
+-- governance, the investor through the request this approval consumed.
+--
+-- It is single-use. Every choice is consuming, so redeeming, cancelling,
+-- expiring and revoking are mutually exclusive, and Canton's double-spend
+-- protection picks exactly one winner if two are submitted concurrently.
+template ApprovedRedemption
+  with
+    terms : RedemptionTerms
+    keepers : [Party]
+      -- ^ Committee members allowed to expire the approval after its deadline.
+    intentRef : AnyContractId
+      -- ^ The investor request this approval consumed.
+    slotCid : ContractId ReservationSlot
+      -- ^ The issuer's reservation slot backing this approval.
+    allocationCid : ContractId Allocation
+      -- ^ The cash reserved for the payout.
+    approvedAt : Time
+    expiresAt : Time
+      -- ^ Bounded expiry; never later than the investor's own deadline.
+  where
+    signatory terms.issuer, terms.investor
+    observer terms.payoutRecipient
+    ensure validTerms terms && approvedAt < expiresAt && expiresAt <= terms.expiresAt
+
+    -- | Burn the shares and pay the cash in one transaction.
+    --
+    -- The burn is a Registry burn offer created and accepted here, not a
+    -- transfer to the issuer followed by a later burn. If the burn, the
+    -- payout or any check fails, the whole transaction is rejected and
+    -- nothing changes: the shares stay with the investor, the cash stays
+    -- reserved, and this approval stays active for a retry.
+    choice ApprovedRedemption_Redeem : RedemptionResult
+      with
+        shareHoldingCids : [ContractId Registry.Holding]
+          -- ^ The investor's unlocked share holdings to burn from.
+        shareFactoryCid : ContractId AllocationFactory
+          -- ^ The Registry factory of the share instrument.
+        burnExtraArgs : ExtraArgs
+          -- ^ Registry choice context for the burn.
+        payoutExtraArgs : ExtraArgs
+          -- ^ Registry choice context for executing the cash allocation.
+      controller terms.investor, terms.payoutRecipient
+      do
+        now <- getTime
+        assertMsg "Approval has expired" (now < expiresAt)
+
+        -- The reservation must still be the one that was approved.
+        checkReservation terms intentRef expiresAt allocationCid
+
+        -- Share leg: the issuer offers the burn, the investor accepts it.
+        offered <- exercise shareFactoryCid AllocationFactory_OfferBurn with
+          expectedAdmin = terms.issuer
+          burn = Burn with
+            instrumentId = terms.shareInstrument
+            amount = terms.shareQuantity
+            holder = terms.investor
+            reference = terms.requestId
+            requestedAt = approvedAt
+            executeBefore = expiresAt
+            meta = emptyMetadata
+          extraArgs = burnExtraArgs
+        burned <- exercise offered.burnOfferCid BurnOffer_Accept with
+          holdingCids = shareHoldingCids
+          extraArgs = burnExtraArgs
+
+        -- Cash leg: execute the reserved transfer to the recipient.
+        paid <- exercise allocationCid Allocation_ExecuteTransfer with
+          extraArgs = payoutExtraArgs
+
+        -- Do not take the allocation's word for it: the recipient must now
+        -- hold exactly the payout, unlocked, in holdings signed by the cash
+        -- instrument's admin.
+        amounts <- forA paid.receiverHoldingCids \holdingCid -> do
+          holding <- fetch holdingCid
+          let holdingView = view holding
+          assertMsg "Payout holding is not signed by the cash instrument admin"
+            (terms.cashInstrument.admin `elem` signatory holding)
+          assertMsg "Payout holding has the wrong owner"
+            (holdingView.owner == terms.payoutRecipient)
+          assertMsg "Payout holding has the wrong instrument"
+            (holdingView.instrumentId == terms.cashInstrument)
+          assertMsg "Payout holding is locked" (holdingView.lock == None)
+          pure holdingView.amount
+        assertMsg "Payout does not equal the approved amount" (sum amounts == terms.payoutAmount)
+
+        receiptCid <- create RedemptionReceipt with
+          terms
+          intentRef
+          slotCid
+          burnedQuantity = terms.shareQuantity
+          paidAmount = terms.payoutAmount
+          payoutHoldingCids = paid.receiverHoldingCids
+          approvedAt
+          redeemedAt = now
+        pure RedemptionResult with
+          receiptCid
+          payoutHoldingCids = paid.receiverHoldingCids
+          shareChangeCid = burned.remaining
+
+    -- | The investor withdraws their authorization. Always succeeds while the
+    -- approval is active; it does not touch the cash. The reservation is
+    -- handed to the issuer as a separate cleanup item.
+    choice ApprovedRedemption_Cancel : ContractId ReservationCleanup
+      controller terms.investor
+      do
+        now <- getTime
+        toCleanup this InvestorCancelled now
+
+    -- | A keeper closes an approval after its deadline.
+    choice ApprovedRedemption_Expire : ContractId ReservationCleanup
+      with
+        actor : Party
+      controller actor
+      do
+        assertMsg "Actor is not a keeper" (actor `elem` keepers)
+        now <- getTime
+        assertMsg "Approval has not expired yet" (now >= expiresAt)
+        toCleanup this ApprovalExpired now
+
+    -- | The issuer revokes the approval before it is used. Needs the issuer's
+    -- own authority, which in practice means a committee vote.
+    choice ApprovedRedemption_Revoke : ContractId ReservationCleanup
+      controller terms.issuer
+      do
+        now <- getTime
+        toCleanup this IssuerRevoked now
+
+-- | Result of `ApprovedRedemption_Redeem`.
+data RedemptionResult = RedemptionResult
+  with
+    receiptCid : ContractId RedemptionReceipt
+    payoutHoldingCids : [ContractId Api.Holding]
+      -- ^ The recipient's new cash holdings.
+    shareChangeCid : Optional (ContractId Registry.Holding)
+      -- ^ What is left of the investor's share holdings, if anything.
+  deriving (Eq, Show)
+
+-- | Turn a no-longer-valid approval into the issuer's cleanup item.
+toCleanup : ApprovedRedemption -> CancellationReason -> Time -> Update (ContractId ReservationCleanup)
+toCleanup approval reason cancelledAt =
+  create ReservationCleanup with
+    issuer = approval.terms.issuer
+    keepers = approval.keepers
+    terms = approval.terms
+    intentRef = approval.intentRef
+    slotCid = approval.slotCid
+    allocationCid = approval.allocationCid
+    reason
+    cancelledAt

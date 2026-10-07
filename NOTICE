@@ -1,0 +1,38 @@
+IntentTA - Private Redemption Settlement Kit for Canton
+Copyright 2026 IntentTA contributors
+
+Licensed under the Apache License, Version 2.0. See LICENSE.
+
+Third-party components
+----------------------
+
+The pre-built DAR files in daml/dars/ are redistributed unmodified. Their
+SHA-256 checksums are recorded in daml/dars/SHA256SUMS and are verified by
+scripts/verify-dars.sh.
+
+Decentralization Manager (DecMan)
+  governance-action-v1-0.1.0.dar, governance-core-v1-0.1.0.dar, testlib-0.1.0.dar
+  Copyright 2026 BitSafe Finance / DLC-Link, Inc. Apache License 2.0.
+  Source: https://github.com/DLC-link/decentralization-manager
+  Taken from commit 68e05aed7461c1c762e62e6816b7dee1ef9f8f06
+  (releases/v1 and daml/dars).
+
+Digital Asset Registry utility
+  utility-registry-app-v0-0.7.0.dar, utility-registry-v0-0.6.0.dar,
+  utility-registry-holding-v0-0.2.1.dar, utility-credential-v0-0.1.0.dar
+  Copyright 2026 Digital Asset (Switzerland) GmbH. Apache License 2.0.
+  Taken from the DecMan repository at the commit above (daml/dars).
+
+Splice / Canton Network Token Standard (CIP-0056)
+  splice-api-token-holding-v1, -metadata-v1, -burn-mint-v1,
+  -transfer-instruction-v1, splice-api-featured-app-v1 (all 1.0.0),
+  splice-util-0.1.4.dar, splice-amulet-0.1.17.dar
+  Taken from the DecMan repository at the commit above (daml/dars).
+
+  splice-api-token-allocation-v1-1.0.0.dar,
+  splice-api-token-allocation-instruction-v1-1.0.0.dar
+  Taken from https://github.com/hyperledger-labs/splice (daml/dars). Their
+  package ids match the ones bundled inside the Registry DARs.
+
+  Copyright Digital Asset (Switzerland) GmbH and Splice contributors.
+  Apache License 2.0. Source: https://github.com/hyperledger-labs/splice

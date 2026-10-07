@@ -1,0 +1,113 @@
+-- Copyright (c) 2026 IntentTA contributors.
+-- SPDX-License-Identifier: Apache-2.0
+
+-- | Approval goes through DecMan's real `GovernanceRules` 2-of-3 threshold,
+-- and the investor gets no governance rights from requesting.
+module IntentTA.Redemption.Test.Governance where
+
+import Daml.Script
+
+import Governance.Action (GovernableAction, GovernableAction_ProposerCancel(..))
+import Governance.Rules
+
+import IntentTA.Redemption.Action
+import IntentTA.Redemption.Approved
+import IntentTA.Redemption.Intent
+import IntentTA.Redemption.Test.Setup
+
+-- | One confirmation is not enough for a 2-of-3 committee.
+test_one_confirmation_cannot_approve : Script ()
+test_one_confirmation_cannot_approve = do
+  w <- setupWorld
+  terms <- termsFor w w.investor "GOV-001" 100.0 100.0
+  intentCid <- requestRedemption terms
+  proposalCid <- proposeApproval w w.m1 intentCid terms
+  c1 <- confirm w proposalCid w.m1
+  mustFailWith "execute with 1 of 3" "Enough confirmations to execute action"
+    =<< tryExecute w proposalCid [c1] w.m1
+  shouldEqual "request still pending" 1 . length =<< query @InvestorIntent w.investor
+  shouldEqual "no approval" 0 . length =<< query @ApprovedRedemption w.investor
+  shouldEqual "no cash reserved" 1000.0 =<< unlockedBalance w.cash w.issuer
+
+-- | The same member confirming twice does not reach the threshold.
+test_duplicate_confirmer_cannot_approve : Script ()
+test_duplicate_confirmer_cannot_approve = do
+  w <- setupWorld
+  terms <- termsFor w w.investor "GOV-002" 100.0 100.0
+  intentCid <- requestRedemption terms
+  proposalCid <- proposeApproval w w.m1 intentCid terms
+  c1 <- confirm w proposalCid w.m1
+  c2 <- confirm w proposalCid w.m1
+  mustFailWith "execute with a duplicate confirmer" "No duplicate confirmers"
+    =<< tryExecute w proposalCid [c1, c2] w.m1
+  shouldEqual "no approval" 0 . length =<< query @ApprovedRedemption w.investor
+
+-- | Requesting a redemption gives the investor no way into governance: they
+-- cannot propose, confirm or execute, even for their own request.
+test_investor_has_no_governance_rights : Script ()
+test_investor_has_no_governance_rights = do
+  w <- setupWorld
+  terms <- termsFor w w.investor "GOV-003" 100.0 100.0
+  intentCid <- requestRedemption terms
+
+  -- The request itself is not a governable action.
+  actions <- queryInterface @GovernableAction w.issuer
+  shouldEqual "a request is not a proposal" 0 (length actions)
+
+  -- Self-proposal: the investor can write a proposal contract, but the
+  -- committee's rules refuse to count a vote for it.
+  (policyCid, _) <- currentPolicy w
+  selfProposal <- submit w.investor do
+    createCmd ApproveRedemptionAction with
+      governanceParty = w.issuer
+      proposer = w.investor
+      intentCid
+      terms
+      policyCid
+      cashFactoryCid = toInterfaceContractId w.cash.allocationFactoryCid
+      cashHoldingCids = []
+      allocateExtraArgs = transferArgs w.cash
+  let selfProposalCid : ContractId GovernableAction = toInterfaceContractId selfProposal
+  mustFailWith "member confirming an investor's proposal" "Proposer is authorized"
+    =<< trySubmit (actAs w.m1 <> readAs w.issuer) do
+      exerciseCmd w.rulesCid GovernanceRules_ConfirmAction with
+        confirmer = w.m1
+        actionProposalCid = selfProposalCid
+
+  -- Confirming: refused even if the investor could read the rules contract.
+  proposalCid <- proposeApproval w w.m1 intentCid terms
+  mustFailWith "investor confirming" "Confirmer is a governance member"
+    =<< trySubmit (actAs w.investor <> readAs w.issuer) do
+      exerciseCmd w.rulesCid GovernanceRules_ConfirmAction with
+        confirmer = w.investor
+        actionProposalCid = proposalCid
+
+  -- Executing: refused as well.
+  c1 <- confirm w proposalCid w.m1
+  c2 <- confirm w proposalCid w.m2
+  mustFailWith "investor executing" "Executor is a governance member"
+    =<< tryExecute w proposalCid [c1, c2] w.investor
+
+  -- And without read access to the issuer, which is the real situation, the
+  -- investor cannot even reach the rules contract.
+  mustFailWith "investor confirming without read access" notVisible
+    =<< trySubmit w.investor do
+      exerciseCmd w.rulesCid GovernanceRules_ConfirmAction with
+        confirmer = w.investor
+        actionProposalCid = proposalCid
+
+  shouldEqual "no approval" 0 . length =<< query @ApprovedRedemption w.investor
+
+-- | A member who is not the proposer can retract nothing; the proposer can
+-- retract their own proposal, after which it cannot be executed.
+test_proposer_can_retract_proposal : Script ()
+test_proposer_can_retract_proposal = do
+  w <- setupWorld
+  terms <- termsFor w w.investor "GOV-004" 100.0 100.0
+  intentCid <- requestRedemption terms
+  proposalCid <- proposeApproval w w.m1 intentCid terms
+  c1 <- confirm w proposalCid w.m1
+  c2 <- confirm w proposalCid w.m2
+  submit w.m1 $ exerciseCmd proposalCid GovernableAction_ProposerCancel
+  mustFailWith "execute a retracted proposal" consumed =<< tryExecute w proposalCid [c1, c2] w.m3
+  shouldEqual "request still pending" 1 . length =<< query @InvestorIntent w.investor

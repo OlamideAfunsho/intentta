@@ -1,0 +1,4 @@
+packages:
+  - intentta-redemption
+  - intentta-issuer-setup
+  - intentta-redemption-test

@@ -1,0 +1,32 @@
+-- Copyright (c) 2026 IntentTA contributors.
+-- SPDX-License-Identifier: Apache-2.0
+
+-- | The permanent record of a settled redemption.
+module IntentTA.Redemption.Receipt where
+
+import Splice.Api.Token.HoldingV1 qualified as Api (Holding)
+import Splice.Api.Token.MetadataV1 (AnyContractId)
+
+import IntentTA.Redemption.Reservation (ReservationSlot)
+import IntentTA.Redemption.Types
+
+-- | Created in the same transaction as the burn and the payout, and only
+-- there: it needs both the issuer's and the investor's signature, and the only
+-- code path that holds both is `ApprovedRedemption_Redeem`. It has no choices,
+-- so it can never be archived or reused.
+template RedemptionReceipt
+  with
+    terms : RedemptionTerms
+    intentRef : AnyContractId
+      -- ^ The original investor request.
+    slotCid : ContractId ReservationSlot
+      -- ^ The issuer's reservation slot, which this receipt lets them release.
+    burnedQuantity : Decimal
+    paidAmount : Decimal
+    payoutHoldingCids : [ContractId Api.Holding]
+      -- ^ The cash holdings the recipient received.
+    approvedAt : Time
+    redeemedAt : Time
+  where
+    signatory terms.issuer, terms.investor
+    observer terms.payoutRecipient

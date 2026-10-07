@@ -1,0 +1,385 @@
+-- Copyright (c) 2026 IntentTA contributors.
+-- SPDX-License-Identifier: Apache-2.0
+
+-- | Shared fixture: a Registry with a FundShare and a TestUSD instrument, a
+-- real DecMan `GovernanceRules` contract with a 2-of-3 committee, a funded
+-- issuer treasury and an investor holding shares.
+--
+-- Submissions use explicit disclosure rather than `readAs` on registry
+-- parties, so the tests exercise the same visibility an investor or a
+-- committee member has on a real participant.
+module IntentTA.Redemption.Test.Setup where
+
+import DA.Optional (catOptionals)
+import DA.Set qualified as Set
+import DA.Text (isInfixOf)
+import DA.TextMap qualified as TextMap
+import DA.Time (hours, minutes, addRelTime)
+import Daml.Script
+
+import Splice.Api.Token.AllocationInstructionV1 qualified as Api (AllocationFactory)
+import Splice.Api.Token.AllocationV1 qualified as Api (Allocation)
+import Splice.Api.Token.HoldingV1 (InstrumentId(..))
+import Splice.Api.Token.HoldingV1 qualified as Api (Holding)
+import Splice.Api.Token.MetadataV1
+
+import Governance.Action (GovernableAction)
+import Governance.Confirmation (GovernanceConfirmation)
+import Governance.ExecutionResult (ExecuteConfirmedActionResult)
+import Governance.Rules
+
+import TestLib.Credentials (getRegistrarOnboardingRequirements)
+import TestLib.Instrument (createFeaturedAppRight, createInstrumentConfiguration)
+import TestLib.Registrar (OnboardRegistrarConfig(..), onboardRegistrar)
+import TestLib.Registry (RegistrySetup, setupRegistry)
+import TestLib.Token (SetupTokenResult(..))
+import TestLib.TokenOps (createTransferContext, getBurnMintDisclosuresFromResult, mintTokens)
+
+import Utility.Registry.Holding.V0.Holding qualified as Registry (Holding(..))
+import Utility.Registry.V0.Holding.Allocation (DvpLegAllocation(..))
+import Utility.Registry.V0.Holding.TokenApiUtils (instrumentConfigurationContextKey, issuerCredentialsContextKey)
+
+import IntentTA.Redemption.Action
+import IntentTA.Redemption.Approved
+import IntentTA.Redemption.Cleanup
+import IntentTA.Redemption.Intent
+import IntentTA.Redemption.Policy
+import IntentTA.Redemption.Types
+
+-- ============================================================================
+-- Fixture
+-- ============================================================================
+
+data World = World
+  with
+    issuer : Party
+      -- ^ The fund issuer: DecMan governance party and FundShare registrar.
+    m1 : Party
+    m2 : Party
+    m3 : Party
+      -- ^ The 2-of-3 committee.
+    investor : Party
+    investor2 : Party
+    outsider : Party
+    operator : Party
+      -- ^ Registry operator.
+    cashAdmin : Party
+      -- ^ TestUSD registrar; deliberately not the issuer.
+    dso : Party
+    share : SetupTokenResult
+    cash : SetupTokenResult
+    rulesCid : ContractId GovernanceRules
+  deriving (Eq, Show)
+
+shareId : Text
+shareId = "FUNDSHARE"
+
+cashId : Text
+cashId = "TESTUSD"
+
+-- | Onboard a registrar with one instrument on an existing Registry.
+setupInstrument : RegistrySetup -> Party -> Party -> Party -> Text -> Script SetupTokenResult
+setupInstrument registry operator dso registrar id = do
+  let instrumentId = InstrumentId with admin = registrar; id
+  onboarded <- onboardRegistrar registry OnboardRegistrarConfig with
+    registrar
+    operator
+    dso
+    appRewardBeneficiary = registrar
+    appRewardWeight = 1.0
+    registrarRequirements = getRegistrarOnboardingRequirements registrar
+  instrumentConfigurationCid <-
+    createInstrumentConfiguration registrar onboarded.registrarServiceCid instrumentId
+  featuredAppRightCid <- createFeaturedAppRight dso registrar
+  pure SetupTokenResult with
+    registrar
+    provider = registrar
+    operator
+    dso
+    instrumentId
+    providerServiceCid = onboarded.providerServiceCid
+    providerConfigurationCid = onboarded.providerConfigurationCid
+    registrarServiceCid = onboarded.registrarServiceCid
+    allocationFactoryCid = onboarded.allocationFactoryCid
+    transferRuleCid = onboarded.transferRuleCid
+    instrumentConfigurationCid
+    featuredAppRightCid
+    appRewardConfigurationCid = onboarded.appRewardConfigurationCid
+    providerCredentialCids = onboarded.providerCredentialCids
+
+-- | Policy used by default: approvals last at most 2 hours, a single
+-- redemption may reserve at most 500 TestUSD, and at most 600 in total.
+defaultPolicy : World -> RedemptionPolicy
+defaultPolicy w = RedemptionPolicy with
+  issuer = w.issuer
+  keepers = [w.m1, w.m2, w.m3]
+  shareInstrument = w.share.instrumentId
+  cashInstrument = w.cash.instrumentId
+  maxApprovalTtl = hours 2
+  maxPerRedemption = 500.0
+  maxOutstanding = 600.0
+  outstanding = 0.0
+  openReservations = 0
+
+-- | The standard world: issuer treasury of 1000 TestUSD, investor with 100
+-- FundShare, and nothing else.
+setupWorld : Script World
+setupWorld = setupWorldWith 1000.0 100.0
+
+-- | A world with the given issuer treasury and investor share balance.
+setupWorldWith : Decimal -> Decimal -> Script World
+setupWorldWith treasury shares = do
+  issuer <- allocateParty "FundIssuer"
+  m1 <- allocateParty "Member1"
+  m2 <- allocateParty "Member2"
+  m3 <- allocateParty "Member3"
+  investor <- allocateParty "Investor"
+  investor2 <- allocateParty "Investor2"
+  outsider <- allocateParty "Outsider"
+  operator <- allocateParty "RegistryOperator"
+  cashAdmin <- allocateParty "CashAdmin"
+  dso <- allocateParty "DSO"
+
+  registry <- setupRegistry operator
+  share <- setupInstrument registry operator dso issuer shareId
+  cash <- setupInstrument registry operator dso cashAdmin cashId
+
+  rulesCid <- submit issuer $ createCmd GovernanceRules with
+    governanceParty = issuer
+    members = Set.fromList [m1, m2, m3]
+    threshold = 2
+    actionConfirmationTimeout = minutes 30
+    additionalProposers = None
+
+  let w = World with ..
+  _ <- submit issuer $ createCmd (defaultPolicy w)
+  _ <- mintTokens issuer treasury cash None
+  _ <- mintTokens investor shares share None
+  pure w
+
+-- ============================================================================
+-- Ledger views
+-- ============================================================================
+
+-- | Registry holdings of `owner` in `token`, as seen by `owner`.
+holdingsOf : SetupTokenResult -> Party -> Script [(ContractId Registry.Holding, Registry.Holding)]
+holdingsOf token owner =
+  queryFilter @Registry.Holding owner \h ->
+    h.owner == owner
+      && h.registrar == token.registrar
+      && h.instrument.source == token.instrumentId.admin
+      && h.instrument.id == token.instrumentId.id
+
+-- | Total balance, locked or not.
+balance : SetupTokenResult -> Party -> Script Decimal
+balance token owner = sum . map ((.amount) . snd) <$> holdingsOf token owner
+
+-- | Balance that is free to spend.
+unlockedBalance : SetupTokenResult -> Party -> Script Decimal
+unlockedBalance token owner =
+  sum . map ((.amount) . snd) . filter (\(_, h) -> h.lock == None) <$> holdingsOf token owner
+
+unlockedCids : SetupTokenResult -> Party -> Script [ContractId Registry.Holding]
+unlockedCids token owner =
+  map fst . filter (\(_, h) -> h.lock == None) <$> holdingsOf token owner
+
+currentPolicy : World -> Script (ContractId RedemptionPolicy, RedemptionPolicy)
+currentPolicy w = do
+  policies <- query @RedemptionPolicy w.issuer
+  case policies of
+    [p] -> pure p
+    _ -> abort ("expected exactly one policy, found " <> show (length policies))
+
+-- ============================================================================
+-- Registry choice contexts and disclosures
+-- ============================================================================
+
+-- | Choice context for burning: instrument configuration, no credentials.
+burnArgs : SetupTokenResult -> ExtraArgs
+burnArgs token = ExtraArgs with
+  context = ChoiceContext with
+    values = TextMap.fromList
+      [ (instrumentConfigurationContextKey, AV_ContractId (coerceContractId token.instrumentConfigurationCid))
+      , (issuerCredentialsContextKey, AV_List [])
+      ]
+  meta = emptyMetadata
+
+-- | Choice context for allocating, executing and withdrawing.
+transferArgs : SetupTokenResult -> ExtraArgs
+transferArgs token = ExtraArgs with
+  context = createTransferContext token
+  meta = emptyMetadata
+
+-- | What the Registry's off-ledger API would disclose for an instrument.
+registryDisclosures : SetupTokenResult -> Script [Disclosure]
+registryDisclosures token = do
+  base <- getBurnMintDisclosuresFromResult token
+  rule <- queryDisclosure token.registrar token.transferRuleCid
+  pure (base <> catOptionals [rule])
+
+-- | Disclosure of a cash allocation and the holding it locks.
+allocationDisclosures : World -> ContractId Api.Allocation -> Script [Disclosure]
+allocationDisclosures w allocationCid = do
+  let legCid : ContractId DvpLegAllocation = coerceContractId allocationCid
+  leg <- queryContractId w.issuer legCid
+  case leg of
+    None -> pure []
+    Some l -> do
+      a <- queryDisclosure w.issuer legCid
+      h <- queryDisclosure w.issuer l.lockedHoldingCid
+      pure (catOptionals [a, h])
+
+-- ============================================================================
+-- Workflow steps
+-- ============================================================================
+
+-- | Standard terms: redeem `shares` for `payout`, paid to the investor,
+-- with a 24 hour investor deadline.
+termsFor : World -> Party -> Text -> Decimal -> Decimal -> Script RedemptionTerms
+termsFor w investor requestId shares payout = do
+  now <- getTime
+  pure RedemptionTerms with
+    issuer = w.issuer
+    investor
+    shareInstrument = w.share.instrumentId
+    cashInstrument = w.cash.instrumentId
+    shareQuantity = shares
+    payoutAmount = payout
+    payoutRecipient = investor
+    expiresAt = now `addRelTime` hours 24
+    requestId
+
+requestRedemption : RedemptionTerms -> Script (ContractId InvestorIntent)
+requestRedemption terms = submit terms.investor $ createCmd InvestorIntent with terms
+
+-- | A committee member proposes approval, voting on `terms`.
+proposeApproval : World -> Party -> ContractId InvestorIntent -> RedemptionTerms
+  -> Script (ContractId GovernableAction)
+proposeApproval w proposer intentCid terms = do
+  (policyCid, _) <- currentPolicy w
+  cashCids <- unlockedCids w.cash w.issuer
+  let factoryCid : ContractId Api.AllocationFactory = toInterfaceContractId w.cash.allocationFactoryCid
+  let holdingCids : [ContractId Api.Holding] = map toInterfaceContractId cashCids
+  toInterfaceContractId <$> submit proposer do
+    createCmd ApproveRedemptionAction with
+      governanceParty = w.issuer
+      proposer
+      intentCid
+      terms
+      policyCid
+      cashFactoryCid = factoryCid
+      cashHoldingCids = holdingCids
+      allocateExtraArgs = transferArgs w.cash
+
+confirm : World -> ContractId GovernableAction -> Party -> Script (ContractId GovernanceConfirmation)
+confirm w proposalCid confirmer =
+  (.confirmationCid) <$> submit (actAs confirmer <> readAs w.issuer) do
+    exerciseCmd w.rulesCid GovernanceRules_ConfirmAction with
+      confirmer
+      actionProposalCid = proposalCid
+
+-- | Execute a confirmed proposal as a committee member reading as the issuer.
+tryExecute : World -> ContractId GovernableAction -> [ContractId GovernanceConfirmation] -> Party
+  -> Script (Either SubmitError ExecuteConfirmedActionResult)
+tryExecute w proposalCid confirmations executor = do
+  disclosed <- registryDisclosures w.cash
+  trySubmit (actAs executor <> readAs w.issuer <> discloseMany disclosed) do
+    exerciseCmd w.rulesCid GovernanceRules_ExecuteConfirmedAction with
+      executor
+      actionProposalCid = proposalCid
+      confirmations
+
+-- | Propose, collect 2-of-3 confirmations and execute.
+tryApprove : World -> ContractId InvestorIntent -> RedemptionTerms
+  -> Script (Either SubmitError ExecuteConfirmedActionResult)
+tryApprove w intentCid terms = do
+  proposalCid <- proposeApproval w w.m1 intentCid terms
+  c1 <- confirm w proposalCid w.m1
+  c2 <- confirm w proposalCid w.m2
+  tryExecute w proposalCid [c1, c2] w.m3
+
+-- | Request and approve in one go, returning the investor's approval.
+approved : World -> RedemptionTerms -> Script (ContractId ApprovedRedemption, ApprovedRedemption)
+approved w terms = do
+  intentCid <- requestRedemption terms
+  result <- tryApprove w intentCid terms
+  _ <- mustSucceed "approval" result
+  theApproval terms.investor terms.requestId
+
+theApproval : Party -> Text -> Script (ContractId ApprovedRedemption, ApprovedRedemption)
+theApproval investor requestId = do
+  found <- queryFilter @ApprovedRedemption investor \a -> a.terms.requestId == requestId
+  case found of
+    [a] -> pure a
+    _ -> abort ("expected one approval for " <> requestId <> ", found " <> show (length found))
+
+-- | The investor completes settlement, using only what an investor's own
+-- participant sees plus Registry disclosures.
+tryRedeem : World -> Party -> ContractId ApprovedRedemption -> ApprovedRedemption
+  -> Script (Either SubmitError RedemptionResult)
+tryRedeem w actor approvedCid approval = do
+  shareCids <- unlockedCids w.share approval.terms.investor
+  shareDisclosed <- registryDisclosures w.share
+  cashDisclosed <- registryDisclosures w.cash
+  allocationDisclosed <- allocationDisclosures w approval.allocationCid
+  trySubmit (actAs actor <> discloseMany (shareDisclosed <> cashDisclosed <> allocationDisclosed)) do
+    exerciseCmd approvedCid ApprovedRedemption_Redeem with
+      shareHoldingCids = shareCids
+      shareFactoryCid = w.share.allocationFactoryCid
+      burnExtraArgs = burnArgs w.share
+      payoutExtraArgs = transferArgs w.cash
+
+-- | A keeper withdraws the reservation of a cancelled approval.
+tryReleaseCleanup : World -> Party -> ContractId ReservationCleanup
+  -> Script (Either SubmitError ReservationCleanup_ReleaseResult)
+tryReleaseCleanup w actor cleanupCid = do
+  (policyCid, _) <- currentPolicy w
+  disclosed <- registryDisclosures w.cash
+  trySubmit (actAs actor <> readAs w.issuer <> discloseMany disclosed) do
+    exerciseCmd cleanupCid ReservationCleanup_Release with
+      actor
+      policyCid
+      extraArgs = transferArgs w.cash
+
+releaseCleanup : World -> ContractId ReservationCleanup -> Script ReservationCleanup_ReleaseResult
+releaseCleanup w cleanupCid = mustSucceed "cleanup" =<< tryReleaseCleanup w w.m1 cleanupCid
+
+-- ============================================================================
+-- Assertions
+-- ============================================================================
+
+mustSucceed : Text -> Either SubmitError a -> Script a
+mustSucceed label result = case result of
+  Right a -> pure a
+  Left err -> abort (label <> " should have succeeded but failed: " <> show err)
+
+-- | The submission must be rejected, and for the stated reason.
+mustFailWith : Text -> Text -> Either SubmitError a -> Script ()
+mustFailWith label needle result = case result of
+  Right _ -> abort (label <> " should have been rejected but succeeded")
+  Left err ->
+    assertMsg (label <> " was rejected for the wrong reason.\n  Expected: " <> needle
+        <> "\n  Received: " <> show err)
+      (needle `isInfixOf` show err)
+
+-- Rejection reasons, as Canton and the Daml engine report them.
+
+-- | The submitters lack a signatory's or controller's authority.
+notAuthorized : Text
+notAuthorized = "Authorization failure"
+
+-- | The contract was already consumed: replays, races and reuse.
+consumed : Text
+consumed = "NotActive"
+
+-- | The submitters are not entitled to see the contract at all.
+notVisible : Text
+notVisible = "NotVisible"
+
+-- | A template's `ensure` clause rejected the contract.
+precondition : Text
+precondition = "Template precondition violated"
+
+shouldEqual : (Eq a, Show a) => Text -> a -> a -> Script ()
+shouldEqual label expected actual =
+  assertMsg (label <> ": expected " <> show expected <> ", got " <> show actual) (expected == actual)

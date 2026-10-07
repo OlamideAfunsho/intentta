@@ -1,0 +1,121 @@
+-- Copyright (c) 2026 IntentTA contributors.
+-- SPDX-License-Identifier: Apache-2.0
+
+-- | Privacy, checked with party-scoped ledger queries: each party's active
+-- contract set contains only what that party is a stakeholder of.
+--
+-- Transaction-history privacy (what each party's update stream contains on a
+-- real participant) is checked in `scripts/e2e.mjs`.
+module IntentTA.Redemption.Test.Privacy where
+
+import Daml.Script
+
+import Governance.Action (GovernableAction)
+import Governance.ExecutionResult (GovernanceExecutionResult)
+import Governance.Rules (GovernanceRules)
+import Utility.Registry.Holding.V0.Holding qualified as Registry (Holding(..))
+
+import IntentTA.Redemption.Approved
+import IntentTA.Redemption.Cleanup
+import IntentTA.Redemption.Intent
+import IntentTA.Redemption.Policy
+import IntentTA.Redemption.Receipt
+import IntentTA.Redemption.Reservation
+import IntentTA.Redemption.Test.Setup
+
+-- | Count what a party can see of each contract type.
+data Visible = Visible
+  with
+    intents : Int
+    approvals : Int
+    receipts : Int
+    policies : Int
+    slots : Int
+    cleanups : Int
+    proposals : Int
+    rules : Int
+    audits : Int
+  deriving (Eq, Show)
+
+visibleTo : Party -> Script Visible
+visibleTo p = do
+  intents <- length <$> query @InvestorIntent p
+  approvals <- length <$> query @ApprovedRedemption p
+  receipts <- length <$> query @RedemptionReceipt p
+  policies <- length <$> query @RedemptionPolicy p
+  slots <- length <$> query @ReservationSlot p
+  cleanups <- length <$> query @ReservationCleanup p
+  proposals <- length <$> queryInterface @GovernableAction p
+  rules <- length <$> query @GovernanceRules p
+  audits <- length <$> query @GovernanceExecutionResult p
+  pure Visible with ..
+
+nothing : Visible
+nothing = Visible 0 0 0 0 0 0 0 0 0
+
+-- | Two investors redeem. Neither sees the other's redemption, an outsider
+-- sees nothing, and no investor sees the issuer's policy, budget, committee
+-- proposals or audit trail.
+test_redemptions_are_private : Script ()
+test_redemptions_are_private = do
+  w <- setupWorldWith 1000.0 100.0
+
+  -- Investor 1: request pending.
+  terms1 <- termsFor w w.investor "PRV-001" 100.0 100.0
+  intent1 <- requestRedemption terms1
+  shouldEqual "investor sees own request" (nothing with intents = 1) =<< visibleTo w.investor
+  shouldEqual "other investor sees nothing" nothing =<< visibleTo w.investor2
+  shouldEqual "outsider sees nothing" nothing =<< visibleTo w.outsider
+  shouldEqual "cash admin sees nothing" nothing =<< visibleTo w.cashAdmin
+  shouldEqual "registry operator sees nothing" nothing =<< visibleTo w.operator
+
+  -- A proposal exists; the investor does not see it.
+  proposalCid <- proposeApproval w w.m1 intent1 terms1
+  shouldEqual "investor does not see the proposal" (nothing with intents = 1) =<< visibleTo w.investor
+  c1 <- confirm w proposalCid w.m1
+  c2 <- confirm w proposalCid w.m2
+  _ <- mustSucceed "approval" =<< tryExecute w proposalCid [c1, c2] w.m1
+
+  -- Approved: the investor sees the approval and nothing of the issuer's
+  -- policy, slot, rules or audit record.
+  shouldEqual "investor sees only the approval" (nothing with approvals = 1) =<< visibleTo w.investor
+  shouldEqual "other investor sees nothing" nothing =<< visibleTo w.investor2
+  shouldEqual "outsider sees nothing" nothing =<< visibleTo w.outsider
+
+  -- The issuer (and so each committee member's participant, which hosts the
+  -- issuer party) sees everything. A committee member's own party sees only
+  -- what it signed: its proposals.
+  shouldEqual "issuer view"
+    (nothing with approvals = 1; policies = 1; slots = 1; rules = 1; audits = 1)
+    =<< visibleTo w.issuer
+  shouldEqual "member party view" nothing =<< visibleTo w.m3
+
+  -- Settled.
+  (approvedCid, approval) <- theApproval w.investor "PRV-001"
+  _ <- mustSucceed "redeem" =<< tryRedeem w w.investor approvedCid approval
+  shouldEqual "investor sees the receipt" (nothing with receipts = 1) =<< visibleTo w.investor
+  shouldEqual "other investor sees nothing" nothing =<< visibleTo w.investor2
+  shouldEqual "outsider sees nothing" nothing =<< visibleTo w.outsider
+  shouldEqual "cash admin sees no redemption contracts" nothing =<< visibleTo w.cashAdmin
+
+  -- Balances are private too.
+  shouldEqual "outsider sees no investor cash" 0 . length =<< holdingsAsSeenBy w.outsider w w.investor
+  shouldEqual "other investor sees no investor cash" 0 . length =<< holdingsAsSeenBy w.investor2 w w.investor
+
+-- | After a cancellation, cleanup is the issuer's business: the investor
+-- does not see the cleanup item or what happens to the cash.
+test_cleanup_is_private_to_the_issuer : Script ()
+test_cleanup_is_private_to_the_issuer = do
+  w <- setupWorld
+  terms <- termsFor w w.investor "PRV-002" 100.0 100.0
+  (approvedCid, _) <- approved w terms
+  _ <- submit w.investor $ exerciseCmd approvedCid ApprovedRedemption_Cancel
+  shouldEqual "investor sees nothing after cancelling" nothing =<< visibleTo w.investor
+  issuerView <- visibleTo w.issuer
+  shouldEqual "issuer sees the cleanup item" 1 issuerView.cleanups
+
+-- | Cash holdings owned by `owner` that `reader` can see.
+holdingsAsSeenBy : Party -> World -> Party -> Script [ContractId Registry.Holding]
+holdingsAsSeenBy reader w owner =
+  map fst <$> queryFilter @Registry.Holding reader \h ->
+    h.owner == owner && h.registrar == w.cashAdmin

@@ -1,0 +1,136 @@
+-- Copyright (c) 2026 IntentTA contributors.
+-- SPDX-License-Identifier: Apache-2.0
+
+-- | Issuer-side limits on approvals: bounded expiry and a cap on the cash
+-- that may be reserved for redemptions at any one time.
+module IntentTA.Redemption.Policy where
+
+import DA.List (unique)
+import DA.Time (RelTime, addRelTime, days, seconds)
+import Splice.Api.Token.HoldingV1 (InstrumentId)
+import Splice.Api.Token.MetadataV1 (AnyContractId)
+
+import IntentTA.Redemption.Receipt (RedemptionReceipt)
+import IntentTA.Redemption.Reservation
+import IntentTA.Redemption.Types
+
+-- | Hard ceiling on `maxApprovalTtl`. An approval is a claim on reserved cash,
+-- so no policy may let one stay open longer than this.
+approvalTtlCeiling : RelTime
+approvalTtlCeiling = days 7
+
+-- | The issuer's redemption limits and the running total of reserved cash.
+-- Signed by the issuer only: investors never see it, so they learn nothing
+-- about other investors' redemptions or the issuer's limits.
+template RedemptionPolicy
+  with
+    issuer : Party
+    keepers : [Party]
+      -- ^ Committee members allowed to run housekeeping without a vote.
+      -- Housekeeping can only release budget against on-ledger evidence.
+    shareInstrument : InstrumentId
+    cashInstrument : InstrumentId
+    maxApprovalTtl : RelTime
+      -- ^ Longest time an approval (and its cash reservation) may stay open.
+    maxPerRedemption : Decimal
+      -- ^ Largest payout a single approval may reserve.
+    maxOutstanding : Decimal
+      -- ^ Cap on the sum of all open reservations.
+    outstanding : Decimal
+      -- ^ Sum of payouts of all open reservation slots.
+    openReservations : Int
+      -- ^ Number of open reservation slots.
+  where
+    signatory issuer
+    ensure unique keepers
+      && issuer `notElem` keepers
+      && shareInstrument.admin == issuer
+      && maxApprovalTtl >= seconds 10
+      && maxApprovalTtl <= approvalTtlCeiling
+      && maxPerRedemption > 0.0
+      && maxOutstanding >= maxPerRedemption
+      && outstanding >= 0.0
+      && outstanding <= maxOutstanding
+      && openReservations >= 0
+
+    -- | Check the limits for one redemption and open a reservation slot.
+    choice RedemptionPolicy_Reserve : RedemptionPolicy_ReserveResult
+      with
+        intentRef : AnyContractId
+        terms : RedemptionTerms
+      controller issuer
+      do
+        now <- getTime
+        assertMsg "Redemption is for another issuer" (terms.issuer == issuer)
+        assertMsg "Redemption is for another share instrument" (terms.shareInstrument == shareInstrument)
+        assertMsg "Redemption is for another cash instrument" (terms.cashInstrument == cashInstrument)
+        assertMsg "Redemption request has expired" (now < terms.expiresAt)
+        assertMsg "Payout exceeds the per-redemption limit" (terms.payoutAmount <= maxPerRedemption)
+        assertMsg "Outstanding-reservation limit reached"
+          (outstanding + terms.payoutAmount <= maxOutstanding)
+        let approvalExpiresAt = min terms.expiresAt (now `addRelTime` maxApprovalTtl)
+        slotCid <- create ReservationSlot with
+          issuer; keepers; intentRef; terms; reservedAt = now; approvalExpiresAt
+        policyCid <- create this with
+          outstanding = outstanding + terms.payoutAmount
+          openReservations = openReservations + 1
+        pure RedemptionPolicy_ReserveResult with policyCid; slotCid; approvalExpiresAt
+
+    -- | Return a slot's budget. Controlled by the issuer, so it is reachable
+    -- only from contracts the issuer signed (`ReservationCleanup`) or by vote.
+    choice RedemptionPolicy_Release : ContractId RedemptionPolicy
+      with
+        slotCid : ContractId ReservationSlot
+      controller issuer
+      do releaseSlot this slotCid
+
+    -- | Return the budget of a settled redemption. A keeper may do this
+    -- without a vote because the receipt proves the reservation was spent.
+    choice RedemptionPolicy_ReleaseRedeemed : ContractId RedemptionPolicy
+      with
+        actor : Party
+        slotCid : ContractId ReservationSlot
+        receiptCid : ContractId RedemptionReceipt
+      controller actor
+      do
+        assertMsg "Actor is not a keeper" (actor `elem` keepers)
+        receipt <- fetch receiptCid
+        assertMsg "Receipt is for another issuer" (receipt.terms.issuer == issuer)
+        assertMsg "Receipt does not settle this slot" (receipt.slotCid == slotCid)
+        releaseSlot this slotCid
+
+    -- | Change the limits. The running totals carry over; the template's
+    -- `ensure` rejects a cap below what is already reserved.
+    choice RedemptionPolicy_SetLimits : ContractId RedemptionPolicy
+      with
+        newKeepers : [Party]
+        newMaxApprovalTtl : RelTime
+        newMaxPerRedemption : Decimal
+        newMaxOutstanding : Decimal
+      controller issuer
+      do
+        create this with
+          keepers = newKeepers
+          maxApprovalTtl = newMaxApprovalTtl
+          maxPerRedemption = newMaxPerRedemption
+          maxOutstanding = newMaxOutstanding
+
+-- | Result of `RedemptionPolicy_Reserve`.
+data RedemptionPolicy_ReserveResult = RedemptionPolicy_ReserveResult
+  with
+    policyCid : ContractId RedemptionPolicy
+    slotCid : ContractId ReservationSlot
+    approvalExpiresAt : Time
+  deriving (Eq, Show)
+
+-- | Consume a slot and subtract it from the running totals. Consuming the
+-- slot is what makes a release happen at most once.
+releaseSlot : RedemptionPolicy -> ContractId ReservationSlot -> Update (ContractId RedemptionPolicy)
+releaseSlot policy slotCid = do
+  slot <- exercise slotCid ReservationSlot_Consume
+  assertMsg "Slot belongs to another issuer" (slot.issuer == policy.issuer)
+  assertMsg "Slot is for another cash instrument" (slot.terms.cashInstrument == policy.cashInstrument)
+  assertMsg "Slot is for another share instrument" (slot.terms.shareInstrument == policy.shareInstrument)
+  create policy with
+    outstanding = policy.outstanding - slot.terms.payoutAmount
+    openReservations = policy.openReservations - 1

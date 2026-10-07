@@ -1,0 +1,177 @@
+-- Copyright (c) 2026 IntentTA contributors.
+-- SPDX-License-Identifier: Apache-2.0
+
+-- | The governed setup of a decentralized issuer (`IntentTA.IssuerSetup`).
+--
+-- After its rules contract exists, the issuer here never submits a command
+-- of its own. It becomes a registrar, launches the fund, issues shares and
+-- receives cash only through 2-of-3 votes, which is the only way a DecMan
+-- decentralized party can act.
+module IntentTA.Redemption.Test.IssuerSetup where
+
+import DA.Optional (catOptionals, fromSome)
+import DA.Set qualified as Set
+import DA.TextMap qualified as TextMap
+import DA.Time (addRelTime, hours, minutes, seconds)
+import Daml.Script
+
+import Governance.Action (GovernableAction)
+import Governance.Rules
+import Splice.Api.Token.HoldingV1 (InstrumentId(..))
+import Splice.Api.Token.MetadataV1
+import TestLib.Registry (setupRegistry)
+import Utility.Registry.App.V0.Model.Mint (Mint(..), MintOffer(..), MintOffer_Accept(..))
+import Utility.Registry.App.V0.Service.AllocationFactory (AllocationFactory_OfferMint(..))
+import Utility.Registry.App.V0.Service.Provider
+import Utility.Registry.App.V0.Service.Registrar
+import Utility.Registry.Holding.V0.Holding qualified as Registry (Holding(..))
+import Utility.Registry.V0.Configuration.Instrument (InstrumentConfiguration(..))
+import Utility.Registry.V0.Holding.TokenApiUtils (instrumentConfigurationContextKey, issuerCredentialsContextKey)
+
+import IntentTA.IssuerSetup
+import IntentTA.Redemption.Policy
+import IntentTA.Redemption.Test.Setup hiding (shareId)
+
+-- | Registry choice context naming one instrument configuration.
+instrumentArgs : ContractId InstrumentConfiguration -> ExtraArgs
+instrumentArgs configCid = ExtraArgs with
+  context = ChoiceContext with
+    values = TextMap.fromList
+      [ (instrumentConfigurationContextKey, AV_ContractId (coerceContractId configCid))
+      , (issuerCredentialsContextKey, AV_List [])
+      ]
+  meta = emptyMetadata
+
+heldBy : Party -> Party -> Script Decimal
+heldBy owner registrar =
+  sum . map ((.amount) . snd) <$> queryFilter @Registry.Holding owner \h ->
+    h.owner == owner && h.registrar == registrar
+
+test_decentralized_issuer_is_set_up_by_vote : Script ()
+test_decentralized_issuer_is_set_up_by_vote = do
+  issuer <- allocateParty "FundIssuer"
+  m1 <- allocateParty "Member1"
+  m2 <- allocateParty "Member2"
+  m3 <- allocateParty "Member3"
+  investor <- allocateParty "Investor"
+  operator <- allocateParty "RegistryOperator"
+  cashAdmin <- allocateParty "CashAdmin"
+  dso <- allocateParty "DSO"
+
+  -- Registry with the operator as provider, and TestUSD under its own admin.
+  registry <- setupRegistry operator
+  cash <- setupInstrument registry operator dso cashAdmin cashId
+  [(providerServiceCid, _)] <- queryFilter @ProviderService operator (\s -> s.provider == operator)
+  providerConfigurationCid <- (.providerConfigurationCid) <$> submit operator do
+    exerciseCmd providerServiceCid ProviderService_CreateProviderConfiguration with
+      registrarRequirements = []
+      holderRequirements = []
+
+  -- The one thing the issuer signs directly: its rules contract. On a DecMan
+  -- network this is the multi-party signing workflow.
+  rulesCid <- submit issuer $ createCmd GovernanceRules with
+    governanceParty = issuer
+    members = Set.fromList [m1, m2, m3]
+    threshold = 2
+    actionConfirmationTimeout = minutes 30
+    additionalProposers = None
+
+  let confirmBy member proposalCid = (.confirmationCid) <$> submit (actAs member <> readAs issuer) do
+        exerciseCmd rulesCid GovernanceRules_ConfirmAction with confirmer = member; actionProposalCid = proposalCid
+  let execute executor proposalCid confirmations disclosed =
+        trySubmit (actAs executor <> readAs issuer <> discloseMany disclosed) do
+          exerciseCmd rulesCid GovernanceRules_ExecuteConfirmedAction with
+            executor; actionProposalCid = proposalCid; confirmations
+  let decide label proposalCid disclosed = do
+        c1 <- confirmBy m1 proposalCid
+        c2 <- confirmBy m2 proposalCid
+        mustSucceed label =<< execute m3 proposalCid [c1, c2] disclosed
+
+  -- 1. Become a registrar.
+  request <- submit m1 $ createCmd RequestRegistrarServiceAction with
+    governanceParty = issuer; proposer = m1; operator; provider = operator
+  let requestCid : ContractId GovernableAction = toInterfaceContractId request
+  only <- confirmBy m1 requestCid
+  mustFailWith "registrar request with 1 of 3" "Enough confirmations to execute action"
+    =<< execute m1 requestCid [only] []
+  other <- confirmBy m2 requestCid
+  _ <- mustSucceed "registrar request" =<< execute m3 requestCid [only, other] []
+  [(serviceRequestCid, _)] <- queryFilter @RegistrarServiceRequest operator (\r -> r.registrar == issuer)
+  onboarded <- submit operator do
+    exerciseCmd providerServiceCid ProviderService_AcceptRegistrarServiceRequest with
+      cid = serviceRequestCid
+      payload = RegistrarServiceRequest_Accept with providerConfigurationCid; credentialCids = []
+  let shareFactoryCid = fromSome onboarded.allocationFactoryCid
+
+  -- 2. Launch the fund: share instrument and redemption policy together.
+  launch <- submit m1 $ createCmd LaunchFundAction with
+    governanceParty = issuer
+    proposer = m1
+    registrarServiceCid = onboarded.registrarServiceCid
+    shareId = "FUNDSHARE"
+    cashInstrument = cash.instrumentId
+    keepers = [m1, m2, m3]
+    maxApprovalTtl = hours 2
+    maxPerRedemption = 500.0
+    maxOutstanding = 600.0
+  _ <- decide "fund launch" (toInterfaceContractId launch) []
+  [(shareConfigCid, _)] <- queryFilter @InstrumentConfiguration issuer (\c -> c.registrar == issuer)
+  [(_, policy)] <- query @RedemptionPolicy issuer
+  shouldEqual "policy instruments"
+    (InstrumentId issuer "FUNDSHARE", cash.instrumentId) (policy.shareInstrument, policy.cashInstrument)
+  shouldEqual "policy starts empty" (0.0, 0) (policy.outstanding, policy.openReservations)
+
+  -- 3. Issue shares: the issuer offers by vote, the investor accepts.
+  passTime (seconds 2)
+  offer <- submit m2 $ createCmd OfferSharesAction with
+    governanceParty = issuer
+    proposer = m2
+    factoryCid = shareFactoryCid
+    shareId = "FUNDSHARE"
+    holder = investor
+    amount = 100.0
+    reference = "initial subscription"
+    extraArgs = instrumentArgs shareConfigCid
+  _ <- decide "share offer" (toInterfaceContractId offer) []
+  shouldEqual "an offer mints nothing" 0.0 =<< heldBy investor issuer
+  [(mintOfferCid, _)] <- queryFilter @MintOffer investor (\o -> o.mint.holder == investor)
+  shareConfig <- queryDisclosure issuer shareConfigCid
+  _ <- submit (actAs investor <> discloseMany (catOptionals [shareConfig])) do
+    exerciseCmd mintOfferCid MintOffer_Accept with extraArgs = instrumentArgs shareConfigCid
+  shouldEqual "investor holds the shares" 100.0 =<< heldBy investor issuer
+
+  -- 4. Take delivery of cash offered by its registrar.
+  now <- getTime
+  cashOffer <- (.mintOfferCid) <$> submit cashAdmin do
+    exerciseCmd cash.allocationFactoryCid AllocationFactory_OfferMint with
+      expectedAdmin = cashAdmin
+      mint = Mint with
+        instrumentId = cash.instrumentId
+        amount = 1000.0
+        holder = issuer
+        reference = "treasury funding"
+        requestedAt = now `addRelTime` seconds (-1)
+        executeBefore = now `addRelTime` hours 24
+        meta = emptyMetadata
+      extraArgs = instrumentArgs cash.instrumentConfigurationCid
+  cashConfig <- catOptionals . pure <$> queryDisclosure cashAdmin cash.instrumentConfigurationCid
+
+  -- The committee votes on an amount; an offer for a different one fails.
+  wrong <- submit m1 $ createCmd AcceptCashAction with
+    governanceParty = issuer; proposer = m1; mintOfferCid = cashOffer; amount = 5000.0
+    extraArgs = instrumentArgs cash.instrumentConfigurationCid
+  w1 <- confirmBy m1 (toInterfaceContractId wrong)
+  w2 <- confirmBy m2 (toInterfaceContractId wrong)
+  mustFailWith "accepting an unexpected amount" "Offer is not for the expected amount"
+    =<< execute m3 (toInterfaceContractId wrong) [w1, w2] cashConfig
+  shouldEqual "treasury still empty" 0.0 =<< heldBy issuer cashAdmin
+
+  accept <- submit m1 $ createCmd AcceptCashAction with
+    governanceParty = issuer; proposer = m1; mintOfferCid = cashOffer; amount = 1000.0
+    extraArgs = instrumentArgs cash.instrumentConfigurationCid
+  _ <- decide "cash delivery" (toInterfaceContractId accept) cashConfig
+  shouldEqual "treasury funded" 1000.0 =<< heldBy issuer cashAdmin
+
+  -- A member alone cannot act for the issuer.
+  mustFailWith "member creating a policy as the issuer" notAuthorized =<< trySubmit (actAs m1 <> readAs issuer) do
+    createCmd policy with maxOutstanding = 1000000.0

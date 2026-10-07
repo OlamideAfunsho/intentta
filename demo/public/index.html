@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IntentTA Redemptions</title>
+<style>
+  :root {
+    --bg: #f6f5f1; --panel: #ffffff; --ink: #1c1d1f; --muted: #6a6d73; --line: #e2e0d8;
+    --accent: #1f4e79; --accent-ink: #ffffff; --ok: #1d6b45; --ok-bg: #e6f2ec;
+    --wait: #8a5a00; --wait-bg: #fbf1dc; --bad: #9b2c2c; --bad-bg: #fbe9e7;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141516; --panel: #1d1f21; --ink: #ecebe6; --muted: #9a9da3; --line: #2e3033;
+      --accent: #8fbce6; --accent-ink: #10202e; --ok: #7fd1a6; --ok-bg: #173226;
+      --wait: #e7c067; --wait-bg: #34290f; --bad: #f0a097; --bad-bg: #3a1b18;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 880px; margin: 0 auto; padding: 28px 16px 64px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
+  h1 { font-size: 22px; margin: 0; letter-spacing: -0.01em; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+  .who { font-size: 13px; color: var(--muted); }
+  select, input, button { font: inherit; color: inherit; }
+  select, input { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  .balances { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+  .balance .n { font-size: 28px; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+  .balance .l { color: var(--muted); font-size: 13px; }
+  form { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; align-items: end; }
+  label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+  label input { color: var(--ink); width: 100%; }
+  button { border: 1px solid var(--line); background: var(--panel); border-radius: 6px; padding: 7px 12px; cursor: pointer; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; padding: 12px 0; border-top: 1px solid var(--line); }
+  .row:first-of-type { border-top: 0; padding-top: 0; }
+  .row .t { font-weight: 600; }
+  .row .d { color: var(--muted); font-size: 13px; }
+  .row .a { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+  .tag { display: inline-block; font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: 999px; margin-left: 6px; vertical-align: 1px; }
+  .tag.pending { color: var(--wait); background: var(--wait-bg); }
+  .tag.approved, .tag.settled { color: var(--ok); background: var(--ok-bg); }
+  .tag.expired { color: var(--bad); background: var(--bad-bg); }
+  .empty { color: var(--muted); font-size: 14px; }
+  .log { font: 12.5px/1.6 var(--mono); max-height: 220px; overflow: auto; overflow-wrap: anywhere; }
+  .log .ok { color: var(--ok); } .log .bad { color: var(--bad); }
+  code { font: 12.5px var(--mono); overflow-wrap: anywhere; }
+  .note { color: var(--muted); font-size: 13px; margin: 10px 0 0; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>Redemptions</h1>
+      <div class="who" id="who">Connecting to the ledger…</div>
+    </div>
+    <label>Viewing as
+      <select id="as">
+        <option value="investor">Investor</option>
+        <option value="investor2">Investor 2</option>
+      </select>
+    </label>
+  </header>
+
+  <section class="panel">
+    <h2>Holdings</h2>
+    <div class="balances">
+      <div class="balance"><div class="n" id="shares">–</div><div class="l" id="sharesLabel">shares</div></div>
+      <div class="balance"><div class="n" id="cash">–</div><div class="l" id="cashLabel">cash</div></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Request a redemption</h2>
+    <form id="requestForm">
+      <label>Shares to redeem <input name="shares" type="number" min="0.01" step="0.01" value="100" required></label>
+      <label>Cash payout <input name="payout" type="number" min="0.01" step="0.01" value="100" required></label>
+      <label>Valid for (hours) <input name="validHours" type="number" min="0.01" step="0.01" value="24" required></label>
+      <button class="primary" type="submit">Request</button>
+    </form>
+    <p class="note">A request moves nothing. Your shares stay with you until you complete an approved redemption.</p>
+  </section>
+
+  <section class="panel">
+    <h2>Open redemptions</h2>
+    <div id="open"><p class="empty">Nothing open.</p></div>
+  </section>
+
+  <section class="panel">
+    <h2>Receipts</h2>
+    <div id="receipts"><p class="empty">No settled redemptions yet.</p></div>
+  </section>
+
+  <section class="panel">
+    <h2>Ledger activity from this page</h2>
+    <div class="log" id="log"><span class="empty">Transactions you submit appear here with their ledger ids.</span></div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => Number(n).toLocaleString(undefined, { maximumFractionDigits: 2 });
+const when = (iso) => new Date(iso).toLocaleString();
+let busy = false;
+let logged = false;
+
+function log(text, ok) {
+  const el = $('log');
+  if (!logged) { el.textContent = ''; logged = true; }
+  const line = document.createElement('div');
+  line.className = ok ? 'ok' : 'bad';
+  line.textContent = new Date().toLocaleTimeString() + '  ' + text;
+  el.prepend(line);
+}
+
+async function post(action, body) {
+  if (busy) return;
+  busy = true;
+  document.querySelectorAll('button').forEach((b) => (b.disabled = true));
+  try {
+    const res = await fetch('/api/' + action, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ as: $('as').value, ...body }),
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || res.statusText);
+    return json;
+  } finally {
+    busy = false;
+    document.querySelectorAll('button').forEach((b) => (b.disabled = false));
+    await refresh();
+  }
+}
+
+function button(label, primary, onClick) {
+  const b = document.createElement('button');
+  b.textContent = label;
+  if (primary) b.className = 'primary';
+  b.onclick = onClick;
+  return b;
+}
+
+function row(title, tag, tagClass, detail, actions) {
+  const r = document.createElement('div');
+  r.className = 'row';
+  const left = document.createElement('div');
+  const t = document.createElement('div');
+  t.className = 't';
+  t.textContent = title;
+  const s = document.createElement('span');
+  s.className = 'tag ' + tagClass;
+  s.textContent = tag;
+  t.append(s);
+  const d = document.createElement('div');
+  d.className = 'd';
+  d.textContent = detail;
+  left.append(t, d);
+  const a = document.createElement('div');
+  a.className = 'a';
+  a.append(...actions);
+  r.append(left, a);
+  return r;
+}
+
+function render(s) {
+  $('who').textContent = `${s.investor.name} · issuer ${s.issuer}`;
+  $('shares').textContent = fmt(s.balances.shares.total);
+  $('sharesLabel').textContent = s.instruments.share;
+  $('cash').textContent = fmt(s.balances.cash.total);
+  $('cashLabel').textContent = s.instruments.cash;
+  const describe = (x) => `${fmt(x.shares)} ${s.instruments.share} for ${fmt(x.payout)} ${s.instruments.cash}`;
+
+  const open = $('open');
+  open.textContent = '';
+  for (const a of s.approvals) {
+    const actions = [];
+    if (!a.expired) {
+      actions.push(button('Complete redemption', true, async () => {
+        try {
+          const r = await post('redeem', { contractId: a.contractId });
+          log(`${a.requestId} settled in one transaction ${r.updateId} (${r.steps.join(' → ')})`, true);
+        } catch (e) { log(`${a.requestId} could not settle; nothing was burned or paid: ${e.message}`, false); }
+      }));
+    }
+    actions.push(button('Cancel', false, async () => {
+      try {
+        const r = await post('cancelApproval', { contractId: a.contractId });
+        log(`${a.requestId} approval cancelled ${r.updateId}`, true);
+      } catch (e) { log(`${a.requestId} cancel failed: ${e.message}`, false); }
+    }));
+    open.append(row(a.requestId, a.expired ? 'approval expired' : 'approved and funded', a.expired ? 'expired' : 'approved',
+      `${describe(a)} · ${a.expired ? 'expired' : 'complete before'} ${when(a.expiresAt)}`, actions));
+  }
+  for (const q of s.requests) {
+    open.append(row(q.requestId, 'awaiting issuer approval', 'pending',
+      `${describe(q)} · request valid until ${when(q.expiresAt)}`,
+      [button('Withdraw request', false, async () => {
+        try {
+          const r = await post('cancelRequest', { contractId: q.contractId });
+          log(`${q.requestId} request withdrawn ${r.updateId}`, true);
+        } catch (e) { log(`${q.requestId} withdraw failed: ${e.message}`, false); }
+      })]));
+  }
+  if (!open.children.length) open.innerHTML = '<p class="empty">Nothing open.</p>';
+
+  const receipts = $('receipts');
+  receipts.textContent = '';
+  for (const r of s.receipts) {
+    receipts.append(row(r.requestId, 'settled', 'settled',
+      `${fmt(r.burned)} ${s.instruments.share} burned · ${fmt(r.paid)} ${s.instruments.cash} paid to ${r.recipient} · ${when(r.redeemedAt)}`, []));
+  }
+  if (!receipts.children.length) receipts.innerHTML = '<p class="empty">No settled redemptions yet.</p>';
+}
+
+async function refresh() {
+  if (busy) return;
+  try {
+    const res = await fetch('/api/state?as=' + $('as').value);
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error);
+    render(json);
+  } catch (e) {
+    $('who').textContent = 'Ledger not reachable: ' + e.message;
+  }
+}
+
+$('requestForm').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const data = Object.fromEntries(new FormData(ev.target));
+  try {
+    const r = await post('request', data);
+    log(`${r.requestId} requested ${r.updateId}`, true);
+  } catch (e) { log(`request rejected: ${e.message}`, false); }
+});
+$('as').addEventListener('change', refresh);
+refresh();
+setInterval(refresh, 2500);
+</script>
+</body>
+</html>

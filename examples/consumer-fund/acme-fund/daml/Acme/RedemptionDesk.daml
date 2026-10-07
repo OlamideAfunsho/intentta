@@ -1,0 +1,67 @@
+-- Copyright (c) 2026 IntentTA contributors.
+-- SPDX-License-Identifier: Apache-2.0
+
+-- | A consuming example: "Acme Income Fund" builds its own investor-facing
+-- product on top of the redemption kit.
+--
+-- Acme redeems at a fixed par value and wants investors to ask for a
+-- quantity, not to fill in settlement terms. This package adds exactly that
+-- and nothing else. Approval, reservation, burn, payout, receipts,
+-- cancellation and cleanup all come from `intentta-redemption-v1` unchanged.
+module Acme.RedemptionDesk where
+
+import DA.Time (RelTime, addRelTime, hours, minutes)
+import Splice.Api.Token.HoldingV1 (InstrumentId(..))
+
+import IntentTA.Redemption.Intent (InvestorIntent(..))
+import IntentTA.Redemption.Types (RedemptionTerms(..))
+
+-- | Acme's standing redemption offer to one investor. One contract per
+-- investor, so investors do not see each other.
+template RedemptionDesk
+  with
+    issuer : Party
+    investor : Party
+    shareInstrument : InstrumentId
+    cashInstrument : InstrumentId
+    parValue : Decimal
+      -- ^ Cash paid per share.
+    minQuantity : Decimal
+      -- ^ Smallest redemption Acme will consider.
+    requestWindow : RelTime
+      -- ^ How long a request stays open for approval and settlement.
+  where
+    signatory issuer
+    observer investor
+    ensure parValue > 0.0
+      && minQuantity > 0.0
+      && shareInstrument.admin == issuer
+      && requestWindow >= minutes 10
+      && requestWindow <= hours 72
+
+    -- | The investor asks to redeem a quantity at par. The result is a
+    -- standard `InvestorIntent`, which the kit takes from there.
+    nonconsuming choice RedemptionDesk_RequestAtPar : ContractId InvestorIntent
+      with
+        quantity : Decimal
+        requestId : Text
+      controller investor
+      do
+        assertMsg "Below Acme's minimum redemption" (quantity >= minQuantity)
+        now <- getTime
+        create InvestorIntent with
+          terms = RedemptionTerms with
+            issuer
+            investor
+            shareInstrument
+            cashInstrument
+            shareQuantity = quantity
+            payoutAmount = quantity * parValue
+            payoutRecipient = investor
+            expiresAt = now `addRelTime` requestWindow
+            requestId
+
+    -- | Acme closes the desk for this investor.
+    choice RedemptionDesk_Close : ()
+      controller issuer
+      do pure ()

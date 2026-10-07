@@ -1,0 +1,35 @@
+-- Copyright (c) 2026 IntentTA contributors.
+-- SPDX-License-Identifier: Apache-2.0
+
+-- | The issuer's bookkeeping entry for one outstanding cash reservation.
+module IntentTA.Redemption.Reservation where
+
+import Splice.Api.Token.MetadataV1 (AnyContractId)
+
+import IntentTA.Redemption.Types
+
+-- | One unit of the issuer's outstanding-reservation budget. Created only by
+-- `RedemptionPolicy_Reserve`, so its existence proves the policy limits were
+-- checked for exactly these terms. It is bound to a single investor request
+-- by contract id and therefore backs at most one approval.
+template ReservationSlot
+  with
+    issuer : Party
+    keepers : [Party]
+      -- ^ Committee members allowed to run housekeeping (expiry, cleanup).
+    intentRef : AnyContractId
+      -- ^ The investor request this slot was reserved for.
+    terms : RedemptionTerms
+      -- ^ The terms the limits were checked against.
+    reservedAt : Time
+    approvalExpiresAt : Time
+      -- ^ Bounded expiry of the approval: the earlier of the investor's own
+      -- deadline and `reservedAt` plus the policy's maximum approval lifetime.
+  where
+    signatory issuer
+    ensure terms.issuer == issuer && reservedAt < approvalExpiresAt
+
+    -- | Consume the slot. Only reachable through the policy's release choices.
+    choice ReservationSlot_Consume : ReservationSlot
+      controller issuer
+      do pure this

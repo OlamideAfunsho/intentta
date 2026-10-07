@@ -1,0 +1,144 @@
+-- Copyright (c) 2026 IntentTA contributors.
+-- SPDX-License-Identifier: Apache-2.0
+
+-- | Failed settlement. Whichever leg fails, neither commits, and the
+-- approval survives so the investor can retry once the cause is fixed.
+module IntentTA.Redemption.Test.Failure where
+
+import DA.Time (hours)
+import Daml.Script
+
+import Splice.Api.Token.AllocationV1 (Allocation_Withdraw(..))
+import TestLib.TokenOps (mintTokens)
+
+import IntentTA.Redemption.Approved
+import IntentTA.Redemption.Cleanup
+import IntentTA.Redemption.Receipt
+import IntentTA.Redemption.Test.Setup
+import IntentTA.Redemption.Types
+
+-- | A reservation is not an irrevocable payment guarantee: the issuer can
+-- withdraw the allocation. If it does, completion fails as a whole and the
+-- shares are not burned.
+test_payout_unavailable_does_not_burn : Script ()
+test_payout_unavailable_does_not_burn = do
+  w <- setupWorld
+  terms <- termsFor w w.investor "FAIL-001" 100.0 100.0
+  (approvedCid, approval) <- approved w terms
+
+  -- The issuer pulls the reserved cash back, outside the kit.
+  disclosed <- registryDisclosures w.cash
+  _ <- submit (actAs w.issuer <> discloseMany disclosed) do
+    exerciseCmd approval.allocationCid Allocation_Withdraw with extraArgs = transferArgs w.cash
+  shouldEqual "cash is back with the issuer" 1000.0 =<< unlockedBalance w.cash w.issuer
+
+  mustFailWith "redeem without a payout" consumed =<< tryRedeem w w.investor approvedCid approval
+
+  shouldEqual "shares not burned" 100.0 =<< unlockedBalance w.share w.investor
+  shouldEqual "nothing paid" 0.0 =<< balance w.cash w.investor
+  shouldEqual "no receipt" 0 . length =<< query @RedemptionReceipt w.investor
+  shouldEqual "approval still recorded" 1 . length =<< query @ApprovedRedemption w.investor
+
+  -- The investor walks away; the issuer clears its books without touching
+  -- an allocation that no longer exists.
+  cleanupCid <- submit w.investor $ exerciseCmd approvedCid ApprovedRedemption_Cancel
+  mustFailWith "withdrawing an allocation that is already gone" consumed =<< tryReleaseCleanup w w.m1 cleanupCid
+  (policyCid, _) <- currentPolicy w
+  _ <- submit (actAs w.m1 <> readAs w.issuer) do
+    exerciseCmd cleanupCid ReservationCleanup_ReleaseSlotOnly with actor = w.m1; policyCid
+  (_, policy) <- currentPolicy w
+  shouldEqual "budget returned" (0.0, 0) (policy.outstanding, policy.openReservations)
+
+-- | If the burn cannot happen, the cash does not move, and the same approval
+-- completes on a later retry.
+test_failed_burn_does_not_pay_and_retry_succeeds : Script ()
+test_failed_burn_does_not_pay_and_retry_succeeds = do
+  w <- setupWorldWith 1000.0 60.0
+  terms <- termsFor w w.investor "FAIL-002" 100.0 100.0
+  (approvedCid, approval) <- approved w terms
+
+  -- Only 60 of the 100 shares are there.
+  mustFailWith "redeem with too few shares" "not exceed total holding amount" =<< tryRedeem w w.investor approvedCid approval
+  shouldEqual "nothing paid" 0.0 =<< balance w.cash w.investor
+  shouldEqual "shares untouched" 60.0 =<< unlockedBalance w.share w.investor
+  shouldEqual "cash still reserved" (1000.0, 900.0)
+    =<< ((,) <$> balance w.cash w.issuer <*> unlockedBalance w.cash w.issuer)
+  shouldEqual "no receipt" 0 . length =<< query @RedemptionReceipt w.investor
+
+  -- A retry with the same inputs fails the same way and changes nothing.
+  mustFailWith "retry with too few shares" "not exceed total holding amount" =<< tryRedeem w w.investor approvedCid approval
+  shouldEqual "still nothing paid" 0.0 =<< balance w.cash w.investor
+
+  -- Once the investor has the shares, the same approval settles.
+  _ <- mintTokens w.investor 40.0 w.share None
+  _ <- mustSucceed "retry after the cause is fixed" =<< tryRedeem w w.investor approvedCid approval
+  shouldEqual "shares burned" 0.0 =<< balance w.share w.investor
+  shouldEqual "cash paid" 100.0 =<< unlockedBalance w.cash w.investor
+
+  -- And a further retry after success cannot pay again.
+  mustFailWith "retry after success" consumed =<< tryRedeem w w.investor approvedCid approval
+  shouldEqual "paid once" 100.0 =<< balance w.cash w.investor
+
+-- | Wrong inputs from the investor's side fail without side effects: locked
+-- or foreign holdings, a wrong factory, or no holdings at all.
+test_bad_settlement_inputs_fail_cleanly : Script ()
+test_bad_settlement_inputs_fail_cleanly = do
+  w <- setupWorld
+  terms <- termsFor w w.investor "FAIL-003" 100.0 100.0
+  (approvedCid, approval) <- approved w terms
+  shareDisclosed <- registryDisclosures w.share
+  cashDisclosed <- registryDisclosures w.cash
+  allocationDisclosed <- allocationDisclosures w approval.allocationCid
+  let opts = actAs w.investor <> discloseMany (shareDisclosed <> cashDisclosed <> allocationDisclosed)
+
+  mustFailWith "redeem with no share holdings" "at least one holding is required" =<< trySubmit opts do
+    exerciseCmd approvedCid ApprovedRedemption_Redeem with
+      shareHoldingCids = []
+      shareFactoryCid = w.share.allocationFactoryCid
+      burnExtraArgs = burnArgs w.share
+      payoutExtraArgs = transferArgs w.cash
+
+  -- The cash instrument's factory is not the share registrar's.
+  shareCids <- unlockedCids w.share w.investor
+  mustFailWith "redeem through another registrar's factory" notAuthorized =<< trySubmit opts do
+    exerciseCmd approvedCid ApprovedRedemption_Redeem with
+      shareHoldingCids = shareCids
+      shareFactoryCid = w.cash.allocationFactoryCid
+      burnExtraArgs = burnArgs w.share
+      payoutExtraArgs = transferArgs w.cash
+
+  shouldEqual "shares untouched" 100.0 =<< unlockedBalance w.share w.investor
+  shouldEqual "nothing paid" 0.0 =<< balance w.cash w.investor
+  _ <- mustSucceed "correct inputs still settle" =<< tryRedeem w w.investor approvedCid approval
+  pure ()
+
+-- | An approval cannot be used after its bounded expiry. A keeper then
+-- closes it and returns the cash and the budget.
+test_expired_approval_cannot_settle : Script ()
+test_expired_approval_cannot_settle = do
+  w <- setupWorld
+  terms <- termsFor w w.investor "FAIL-004" 100.0 100.0
+  (approvedCid, approval) <- approved w terms
+
+  -- Before the deadline nobody can expire it.
+  mustFailWith "expiring early" "Approval has not expired yet"
+    =<< trySubmit (actAs w.m1 <> readAs w.issuer) (exerciseCmd approvedCid ApprovedRedemption_Expire with actor = w.m1)
+
+  passTime (hours 3)
+  mustFailWith "redeem after expiry" "Approval has expired" =<< tryRedeem w w.investor approvedCid approval
+  shouldEqual "shares untouched" 100.0 =<< unlockedBalance w.share w.investor
+  shouldEqual "nothing paid" 0.0 =<< balance w.cash w.investor
+
+  -- Only keepers may expire.
+  mustFailWith "outsider expiring" "Actor is not a keeper"
+    =<< trySubmit (actAs w.outsider <> readAs w.issuer) (exerciseCmd approvedCid ApprovedRedemption_Expire with actor = w.outsider)
+
+  cleanupCid <- submit (actAs w.m2 <> readAs w.issuer) do
+    exerciseCmd approvedCid ApprovedRedemption_Expire with actor = w.m2
+  Some cleanup <- queryContractId w.issuer cleanupCid
+  shouldEqual "cleanup reason" ApprovalExpired cleanup.reason
+
+  _ <- releaseCleanup w cleanupCid
+  shouldEqual "cash released" 1000.0 =<< unlockedBalance w.cash w.issuer
+  (_, policy) <- currentPolicy w
+  shouldEqual "budget returned" (0.0, 0) (policy.outstanding, policy.openReservations)

@@ -1,0 +1,551 @@
+{
+  "network": "local Canton (Splice 0.6.12 build, protocol version 35), 4 participants, 1 synchronizer",
+  "decman": "public.ecr.aws/dlc-link/decentralization-manager:v1.13.0, three nodes",
+  "startedAt": "2026-10-07T01:48:51.900Z",
+  "issuer": {
+    "party_id": "fund-issuer::1220a60d00575c6d1a24491fec9daa2b5c679ea5d9395c6ab193ba7963b91bbe2f7c",
+    "threshold": 2,
+    "owners": [
+      "122055ff9174e4b3a92732c6bbb794841e3264deb0021800582436ab98948a5ebd20",
+      "1220573b7ebfd916a8a85f5613a84999a7aed5ed9fc6e318786832d322cc351eb264",
+      "1220ad2621bd4c7194662ec88ce9ca9a2d692e11a5554a5e4723774b76a32c07447b"
+    ],
+    "my_owner_key": "1220573b7ebfd916a8a85f5613a84999a7aed5ed9fc6e318786832d322cc351eb264",
+    "participants": [
+      {
+        "participant_uid": "participant1::1220f716ba013e006117061987a36e4a6b29cfcd6c6620db7926bf507beb32ed604b",
+        "permission": "confirmation",
+        "owner_key": "1220573b7ebfd916a8a85f5613a84999a7aed5ed9fc6e318786832d322cc351eb264"
+      },
+      {
+        "participant_uid": "participant2::1220a4af94361475e8aafb6f06435418b4c5084686e0ac2dc60ea59ac72c5b48cd41",
+        "permission": "confirmation",
+        "owner_key": "1220ad2621bd4c7194662ec88ce9ca9a2d692e11a5554a5e4723774b76a32c07447b"
+      },
+      {
+        "participant_uid": "participant3::1220e76340d1c10cfcdf762a27c649615798117de0312564e220150fcbe871eb2c06",
+        "permission": "confirmation",
+        "owner_key": "122055ff9174e4b3a92732c6bbb794841e3264deb0021800582436ab98948a5ebd20"
+      }
+    ],
+    "contracts": [
+      {
+        "contract_id": "00dcac9e735026c00c7edc2ff26655221be0577c85f7353b2927454fa4dcbcba5aca121220f3e3d0793b4d255b8d2a9961c7012d547e744f272e02ec13641c9c98b73004ff",
+        "template_id": "Governance.Rules:GovernanceRules",
+        "package_id": "361d1f2857f833f8094caf86ecdd5daaa3e2075c22dafe2bf18cde63ee98d488",
+        "package_name": "governance-core-v1",
+        "package_version": "0.1.0",
+        "created_at": "2026-10-07T01:48:07.082042000Z"
+      }
+    ]
+  },
+  "governance": {
+    "contract_id": "00dcac9e735026c00c7edc2ff26655221be0577c85f7353b2927454fa4dcbcba5aca121220f3e3d0793b4d255b8d2a9961c7012d547e744f272e02ec13641c9c98b73004ff",
+    "governance_party": "fund-issuer::1220a60d00575c6d1a24491fec9daa2b5c679ea5d9395c6ab193ba7963b91bbe2f7c",
+    "members": [
+      "member1::1220f716ba013e006117061987a36e4a6b29cfcd6c6620db7926bf507beb32ed604b",
+      "member2::1220a4af94361475e8aafb6f06435418b4c5084686e0ac2dc60ea59ac72c5b48cd41",
+      "member3::1220e76340d1c10cfcdf762a27c649615798117de0312564e220150fcbe871eb2c06"
+    ],
+    "threshold": 2,
+    "additional_proposers": [],
+    "action_confirmation_timeout_microseconds": 1800000000,
+    "package_ref": "#governance-core-v1",
+    "out_of_date": false
+  },
+  "hosting": {
+    "participant1": [
+      "fund-issuer (decentralized)",
+      "member1"
+    ],
+    "participant2": [
+      "fund-issuer (decentralized)",
+      "member2"
+    ],
+    "participant3": [
+      "fund-issuer (decentralized)",
+      "member3"
+    ],
+    "participant4": [
+      "investor",
+      "investor2",
+      "outsider",
+      "registry-operator",
+      "cash-admin"
+    ]
+  },
+  "setup": {
+    "issuer requests registrar service (governed)": {
+      "confirmedOn": [
+        "decman1",
+        "decman2"
+      ],
+      "executedOn": "decman3",
+      "description": "Request Registry registrar service from provider 'registry-operator::122087d1690318de0e1820b381f544c171b4b7cd98675dbc232358ac7f0441a2065e'"
+    },
+    "launch fund (governed)": {
+      "confirmedOn": [
+        "decman1",
+        "decman2"
+      ],
+      "executedOn": "decman3",
+      "description": "Create share instrument FUNDSHARE and its redemption policy: pay in TESTUSD, at most 500.0 per redemption and 600.0 reserved in total"
+    },
+    "issue 400 FUNDSHARE to investor (governed)": {
+      "confirmedOn": [
+        "decman1",
+        "decman2"
+      ],
+      "executedOn": "decman3",
+      "description": "Offer 400.0 FUNDSHARE to 'investor::122087d1690318de0e1820b381f544c171b4b7cd98675dbc232358ac7f0441a2065e'"
+    },
+    "issue 100 FUNDSHARE to investor2 (governed)": {
+      "confirmedOn": [
+        "decman1",
+        "decman2"
+      ],
+      "executedOn": "decman3",
+      "description": "Offer 100.0 FUNDSHARE to 'investor2::122087d1690318de0e1820b381f544c171b4b7cd98675dbc232358ac7f0441a2065e'"
+    },
+    "fund treasury with 1000 TESTUSD (governed)": {
+      "confirmedOn": [
+        "decman1",
+        "decman2"
+      ],
+      "executedOn": "decman3",
+      "description": "Accept 1000.0 offered to the fund treasury"
+    }
+  },
+  "scenarios": [
+    {
+      "name": "D1",
+      "title": "100 FUNDSHARE burned for 100 TESTUSD, approved through DecMan nodes",
+      "steps": [
+        {
+          "label": "investor creates InvestorIntent on participant 4",
+          "tx": {
+            "updateId": "1220e5e0c03c371031f6f57f18592abc87d6388575cde068098753a893947ab6f86b",
+            "offset": 117
+          }
+        },
+        {
+          "label": "member 1 creates ApproveRedemptionAction on participant 1",
+          "tx": {
+            "updateId": "12205f01fa104520f8db83c0607848619512d95e36768f04e33c048370fd428424d8",
+            "offset": 144
+          },
+          "proposalCid": "00ccc0811f17fef75b81e31f60b3aa2cb1a54c9af6a75bb52b02e5ae65aecee6acca121220d7fcb564dd04f89ecdb26b95f5b166690d78223a7e3a64e6766981607c504fab"
+        },
+        {
+          "label": "member 1 confirms through DecMan node 1 (POST /governance/confirm)",
+          "tx": {
+            "updateId": "1220b0cd24ce74a18e2dad49519cdc5e8b38c15766f1395eecef661f8d7b7ea74134",
+            "offset": 147
+          }
+        },
+        {
+          "label": "DecMan node 2 lists the proposal with its terms, 1 of 2 confirmations",
+          "decman": {
+            "action_label": "ApproveRedemption",
+            "description": "Approve redemption DM-001: burn 100.0 FUNDSHARE held by 'investor::122087d1690318de0e1820b381f544c171b4b7cd98675dbc232358ac7f0441a2065e' and pay 100.0 TESTUSD to 'investor::122087d1690318de0e1820b381f544c171b4b7cd98675dbc232358ac7f0441a2065e', valid until 2026-10-08T01:48:52.077Z",
+            "confirmation_count": 1,
+            "can_execute": false
+          }
+        },
+        {
+          "label": "execute below threshold",
+          "rejected": true,
+          "reason": "decman2 POST /governance/execute: 500 {\"error\":\"Failed to execute action: code: 'The system is not in a state required for the operation's execution', message: \\\"DAML_FAILURE(9,1bc19d00): Interpretation error: Error: User failure: UNHANDLED_EXCEPTION/DA.Exception.AssertionFailed:AssertionFailed (error category 9): The "
+        },
+        {
+          "label": "member 2 confirms through DecMan node 2",
+          "tx": {
+            "updateId": "1220402e1a53f8b260c0e82348b233d635f436b95feea187b868cf11947b38f9976b",
+            "offset": 148
+          }
+        },
+        {
+          "label": "member 3 executes through DecMan node 3 (POST /governance/execute): request consumed, cash reserved, approval created in one transaction",
+          "tx": {
+            "updateId": "1220f533522a17eabf2bb26ce6129ff38bec3fb0c086938a3b8ddb7b0e4a9f398721",
+            "offset": 161
+          },
+          "events": [
+            "exercise GovernanceRules_ExecuteConfirmedAction",
+            "exercise GovernanceConfirmation_Consume",
+            "exercise GovernanceConfirmation_Consume",
+            "exercise GovernableAction_Execute",
+            "exercise RedemptionPolicy_Reserve",
+            "created IntentTA.Redemption.Reservation:ReservationSlot",
+            "created IntentTA.Redemption.Policy:RedemptionPolicy",
+            "exercise AllocationFactory_Allocate",
+            "exercise AllocationFactory_AllocateInternal",
+            "exercise Archive",
+            "created Utility.Registry.Holding.V0.Holding:Holding",
+            "created Utility.Registry.Holding.V0.Holding:Holding",
+            "created Utility.Registry.V0.Holding.Allocation:DvpLegAllocation",
+            "exercise InvestorIntent_Approve",
+            "created IntentTA.Redemption.Approved:ApprovedRedemption",
+            "created Governance.ExecutionResult:GovernanceExecutionResult"
+          ]
+        },
+        {
+          "label": "investor settles from participant 4, alone: burn offer created and accepted, cash transferred, receipt created in one transaction",
+          "tx": {
+            "updateId": "12205ba0ee73344d4e381e12a980e8686c9aaa883beef911e52c6e7b223e297dcf6f",
+            "offset": 123
+          },
+          "submittedAs": {
+            "participant": "participant4",
+            "actAs": [
+              "investor"
+            ]
+          },
+          "events": [
+            "exercise ApprovedRedemption_Redeem",
+            "exercise AllocationFactory_OfferBurn",
+            "created Utility.Registry.App.V0.Model.Burn:BurnOffer",
+            "exercise BurnOffer_Accept",
+            "exercise Archive",
+            "created Utility.Registry.Holding.V0.Holding:Holding",
+            "created Utility.Registry.App.V0.Model.Burn:ExecutedBurn",
+            "exercise Allocation_ExecuteTransfer",
+            "exercise TransferRule_ExecuteAllocation",
+            "exercise Archive",
+            "created Utility.Registry.Holding.V0.Holding:Holding",
+            "created IntentTA.Redemption.Receipt:RedemptionReceipt"
+          ]
+        },
+        {
+          "label": "second redeem",
+          "rejected": true,
+          "reason": "CONTRACT_NOT_FOUND: Contract could not be found with id 000ca075726d11c40b3fda331d1fa3af404960e6e0f7a0242893609aebb453d394ca121220963f40cbab467eebc71df41051ce555fe8d8d9c76e1c7ba8b1969c8e9601d18c"
+        },
+        {
+          "label": "member 2, as keeper, releases the reservation budget against the receipt",
+          "tx": {
+            "updateId": "12203a7b876a7ffa574a68584d0ec9c2e0e3fed16286150dc5257fbab1f66deca325",
+            "offset": 157
+          }
+        },
+        {
+          "label": "DecMan audit trail on the ledger: AcceptCash, ApproveRedemption, LaunchFund, OfferShares, OfferShares, RequestRegistrarService"
+        }
+      ],
+      "balances": {
+        "before": {
+          "investorShares": {
+            "total": 400,
+            "unlocked": 400
+          },
+          "investorCash": {
+            "total": 0,
+            "unlocked": 0
+          },
+          "issuerCash": {
+            "total": 1000,
+            "unlocked": 1000
+          }
+        },
+        "afterApproval": {
+          "investorShares": {
+            "total": 400,
+            "unlocked": 400
+          },
+          "investorCash": {
+            "total": 0,
+            "unlocked": 0
+          },
+          "issuerCash": {
+            "total": 1000,
+            "unlocked": 900
+          }
+        },
+        "after": {
+          "investorShares": {
+            "total": 300,
+            "unlocked": 300
+          },
+          "investorCash": {
+            "total": 100,
+            "unlocked": 100
+          },
+          "issuerCash": {
+            "total": 900,
+            "unlocked": 900
+          }
+        }
+      },
+      "decmanAuditTrail": [
+        "AcceptCash",
+        "ApproveRedemption",
+        "LaunchFund",
+        "OfferShares",
+        "OfferShares",
+        "RequestRegistrarService"
+      ]
+    },
+    {
+      "name": "D2",
+      "title": "Cancellation across participants: authorization ends on the investor node, cleanup runs on a committee node",
+      "steps": [
+        {
+          "label": "approved 2-of-3 through DecMan nodes"
+        },
+        {
+          "label": "investor cancels the approval on participant 4",
+          "tx": {
+            "updateId": "12204368b49328478e625b8cdc6d29bd3482468e3d1f22186f06881cc88e529858ae",
+            "offset": 135
+          }
+        },
+        {
+          "label": "redeem after cancel",
+          "rejected": true,
+          "reason": "CONTRACT_NOT_FOUND: Contract could not be found with id 0063ee4f58a1ebeb1d62ea9bf9c8f34f4655441b4288e56965805124d27dd93e65ca1212205560b6cc60e09e65308d2fbde0cec9be7f374c944e21658a6dc6713491db6601"
+        },
+        {
+          "label": "member 3, as keeper, withdraws the reservation from participant 3: cash unlocked, budget returned",
+          "tx": {
+            "updateId": "1220615f64bc4deb5db7cccdf51959d2de8082b4172ec35484aef4a36b917a4c32c1",
+            "offset": 186
+          }
+        }
+      ],
+      "balances": {
+        "before": {
+          "investorShares": {
+            "total": 300,
+            "unlocked": 300
+          },
+          "investorCash": {
+            "total": 100,
+            "unlocked": 100
+          },
+          "issuerCash": {
+            "total": 900,
+            "unlocked": 850
+          }
+        },
+        "afterCancel": {
+          "investorShares": {
+            "total": 300,
+            "unlocked": 300
+          },
+          "investorCash": {
+            "total": 100,
+            "unlocked": 100
+          },
+          "issuerCash": {
+            "total": 900,
+            "unlocked": 850
+          }
+        },
+        "after": {
+          "investorShares": {
+            "total": 300,
+            "unlocked": 300
+          },
+          "investorCash": {
+            "total": 100,
+            "unlocked": 100
+          },
+          "issuerCash": {
+            "total": 900,
+            "unlocked": 900
+          }
+        }
+      }
+    },
+    {
+      "name": "D3",
+      "title": "Direct calls across participants are rejected",
+      "steps": [
+        {
+          "label": "cash-only withdrawal",
+          "rejected": true,
+          "reason": "DAML_AUTHORIZATION_ERROR: Interpretation error: Error: node NodeId(0) (a236e8e22a3b5f199e37d5554e82bafd2df688f901de02b00be3964bdfa8c1ab:Utility.Registry.V0.Holding.Allocation:DvpLegAllocation) requires authorizers fund-issuer::1220a60d00575c6d1a24491fec9daa2b5c679ea5d9395c6ab193ba7963b91bbe2f7c,investor::122087d1690318"
+        },
+        {
+          "label": "member redeem",
+          "rejected": true,
+          "reason": "DAML_AUTHORIZATION_ERROR: Interpretation error: Error: node NodeId(0) (14342bf94776d82f0da74367b964e2b4d515d0d309de1223fb5b4ab988987ec4:IntentTA.Redemption.Approved:ApprovedRedemption) requires authorizers investor::122087d1690318de0e1820b381f544c171b4b7cd98675dbc232358ac7f0441a2065e, but only member1::1220f716ba013e00"
+        },
+        {
+          "label": "member acting as issuer",
+          "rejected": true,
+          "reason": "DAML_AUTHORIZATION_ERROR: Interpretation error: Error: node NodeId(0) (14342bf94776d82f0da74367b964e2b4d515d0d309de1223fb5b4ab988987ec4:IntentTA.Redemption.Policy:RedemptionPolicy) requires authorizers fund-issuer::1220a60d00575c6d1a24491fec9daa2b5c679ea5d9395c6ab193ba7963b91bbe2f7c, but only member1::1220f716ba013e006"
+        },
+        {
+          "label": "the investor then settles normally",
+          "tx": {
+            "updateId": "1220f4eaa247c8cb059601c90d91b4e172a87f408128b4ea9a8aa1feb140bb66e157",
+            "offset": 147
+          }
+        }
+      ]
+    },
+    {
+      "name": "D4",
+      "title": "Privacy across participants: what each node holds",
+      "steps": [
+        {
+          "label": "participant 4 holds no policy, slot, proposal, vote, rules or audit contract for any party it hosts"
+        },
+        {
+          "label": "second investor, outsider, cash admin and registry operator hold no redemption contract"
+        },
+        {
+          "label": "participant 2, which hosts the issuer, holds requests, approvals, receipts, the policy, slots, cleanups and the rules",
+          "templates": [
+            "Governance.Confirmation:GovernanceConfirmation",
+            "Governance.ExecutionResult:GovernanceExecutionResult",
+            "Governance.Rules:GovernanceRules",
+            "IntentTA.IssuerSetup:AcceptCashAction",
+            "IntentTA.IssuerSetup:LaunchFundAction",
+            "IntentTA.IssuerSetup:OfferSharesAction",
+            "IntentTA.IssuerSetup:RequestRegistrarServiceAction",
+            "IntentTA.Redemption.Action:ApproveRedemptionAction",
+            "IntentTA.Redemption.Approved:ApprovedRedemption",
+            "IntentTA.Redemption.Cleanup:ReservationCleanup",
+            "IntentTA.Redemption.Intent:InvestorIntent",
+            "IntentTA.Redemption.Policy:RedemptionPolicy",
+            "IntentTA.Redemption.Receipt:RedemptionReceipt",
+            "IntentTA.Redemption.Reservation:ReservationSlot"
+          ]
+        }
+      ],
+      "views": {
+        "participant4 / investor": {
+          "activeKitContracts": [
+            "IntentTA.Redemption.Receipt:RedemptionReceipt"
+          ],
+          "transactions": 11,
+          "templatesInHistory": [
+            "IntentTA.Redemption.Approved:ApprovedRedemption",
+            "IntentTA.Redemption.Cleanup:ReservationCleanup",
+            "IntentTA.Redemption.Intent:InvestorIntent",
+            "IntentTA.Redemption.Receipt:RedemptionReceipt",
+            "Utility.Registry.App.V0.Model.Burn:BurnOffer",
+            "Utility.Registry.App.V0.Model.Burn:ExecutedBurn",
+            "Utility.Registry.App.V0.Model.Mint:ExecutedMint",
+            "Utility.Registry.App.V0.Model.Mint:MintOffer",
+            "Utility.Registry.App.V0.Service.AllocationFactory:AllocationFactory",
+            "Utility.Registry.Holding.V0.Holding:Holding",
+            "Utility.Registry.V0.Holding.Allocation:DvpLegAllocation",
+            "Utility.Registry.V0.Rule.Transfer:TransferRule"
+          ]
+        },
+        "participant4 / investor2": {
+          "activeKitContracts": [],
+          "transactions": 2,
+          "templatesInHistory": [
+            "Utility.Registry.App.V0.Model.Mint:ExecutedMint",
+            "Utility.Registry.App.V0.Model.Mint:MintOffer",
+            "Utility.Registry.App.V0.Service.AllocationFactory:AllocationFactory",
+            "Utility.Registry.Holding.V0.Holding:Holding"
+          ]
+        },
+        "participant4 / outsider": {
+          "activeKitContracts": [],
+          "transactions": 0,
+          "templatesInHistory": []
+        },
+        "participant4 / cash admin": {
+          "activeKitContracts": [],
+          "transactions": 11,
+          "templatesInHistory": [
+            "Utility.Registry.App.V0.Model.Mint:ExecutedMint",
+            "Utility.Registry.App.V0.Model.Mint:MintOffer",
+            "Utility.Registry.App.V0.Service.AllocationFactory:AllocationFactory",
+            "Utility.Registry.App.V0.Service.Registrar:RegistrarService",
+            "Utility.Registry.App.V0.Service.Registrar:RegistrarServiceRequest",
+            "Utility.Registry.Holding.V0.Holding:Holding",
+            "Utility.Registry.V0.Configuration.Instrument:InstrumentConfiguration",
+            "Utility.Registry.V0.Holding.Allocation:DvpLegAllocation",
+            "Utility.Registry.V0.Rule.Transfer:TransferRule"
+          ]
+        },
+        "participant4 / registry operator": {
+          "activeKitContracts": [],
+          "transactions": 20,
+          "templatesInHistory": [
+            "Utility.Registry.App.V0.Configuration.Provider:ProviderConfiguration",
+            "Utility.Registry.App.V0.Model.Burn:BurnOffer",
+            "Utility.Registry.App.V0.Model.Burn:ExecutedBurn",
+            "Utility.Registry.App.V0.Model.Mint:ExecutedMint",
+            "Utility.Registry.App.V0.Model.Mint:MintOffer",
+            "Utility.Registry.App.V0.Service.AllocationFactory:AllocationFactory",
+            "Utility.Registry.App.V0.Service.Provider:ProviderService",
+            "Utility.Registry.App.V0.Service.Registrar:RegistrarService",
+            "Utility.Registry.App.V0.Service.Registrar:RegistrarServiceRequest",
+            "Utility.Registry.Holding.V0.Holding:Holding",
+            "Utility.Registry.V0.Configuration.Instrument:InstrumentConfiguration",
+            "Utility.Registry.V0.Holding.Allocation:DvpLegAllocation",
+            "Utility.Registry.V0.Rule.Transfer:TransferRule"
+          ]
+        },
+        "participant2 / issuer": {
+          "activeKitContracts": [
+            "IntentTA.Redemption.Policy:RedemptionPolicy",
+            "IntentTA.Redemption.Receipt:RedemptionReceipt",
+            "IntentTA.Redemption.Reservation:ReservationSlot"
+          ],
+          "transactions": 45,
+          "templatesInHistory": [
+            "Governance.Confirmation:GovernanceConfirmation",
+            "Governance.ExecutionResult:GovernanceExecutionResult",
+            "Governance.Rules:GovernanceRules",
+            "IntentTA.IssuerSetup:AcceptCashAction",
+            "IntentTA.IssuerSetup:LaunchFundAction",
+            "IntentTA.IssuerSetup:OfferSharesAction",
+            "IntentTA.IssuerSetup:RequestRegistrarServiceAction",
+            "IntentTA.Redemption.Action:ApproveRedemptionAction",
+            "IntentTA.Redemption.Approved:ApprovedRedemption",
+            "IntentTA.Redemption.Cleanup:ReservationCleanup",
+            "IntentTA.Redemption.Intent:InvestorIntent",
+            "IntentTA.Redemption.Policy:RedemptionPolicy",
+            "IntentTA.Redemption.Receipt:RedemptionReceipt",
+            "IntentTA.Redemption.Reservation:ReservationSlot",
+            "Utility.Registry.App.V0.Model.Burn:BurnOffer",
+            "Utility.Registry.App.V0.Model.Burn:ExecutedBurn",
+            "Utility.Registry.App.V0.Model.Mint:ExecutedMint",
+            "Utility.Registry.App.V0.Model.Mint:MintOffer",
+            "Utility.Registry.App.V0.Service.AllocationFactory:AllocationFactory",
+            "Utility.Registry.App.V0.Service.Registrar:RegistrarService",
+            "Utility.Registry.App.V0.Service.Registrar:RegistrarServiceRequest",
+            "Utility.Registry.Holding.V0.Holding:Holding",
+            "Utility.Registry.V0.Configuration.Instrument:InstrumentConfiguration",
+            "Utility.Registry.V0.Holding.Allocation:DvpLegAllocation",
+            "Utility.Registry.V0.Rule.Transfer:TransferRule"
+          ]
+        },
+        "participant2 / member2": {
+          "activeKitContracts": [],
+          "transactions": 17,
+          "templatesInHistory": [
+            "Governance.Confirmation:GovernanceConfirmation",
+            "Governance.Rules:GovernanceRules",
+            "IntentTA.Redemption.Policy:RedemptionPolicy",
+            "IntentTA.Redemption.Reservation:ReservationSlot"
+          ]
+        }
+      }
+    }
+  ],
+  "finishedAt": "2026-10-07T01:49:09.388Z",
+  "final": {
+    "investorShares": {
+      "total": 280,
+      "unlocked": 280
+    },
+    "investorCash": {
+      "total": 120,
+      "unlocked": 120
+    },
+    "issuerCash": {
+      "total": 880,
+      "unlocked": 880
+    }
+  }
+}

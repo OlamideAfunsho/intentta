@@ -1,0 +1,16 @@
+4fc7912df4a0aeea3cfcc6ba07c880192a5fa88f7c75ed04b922602461b1e485 *governance-action-v1-0.1.0.dar
+b8d05903e63288d4114632f41386491cea215e177183514ea032fe35d24a9544 *governance-core-v1-0.1.0.dar
+26d1b70247abb01d617e5a995771ea5051ead6c252389271f489183be69a23bf *splice-amulet-0.1.17.dar
+8f20d61ddb772d721b183dabc7e94b39f130a3cbd3965e06db7c06c3ed46c616 *splice-api-featured-app-v1-1.0.0.dar
+e2607ca3a1d735a82d3066b78132aa8f94b1886c99a5f14148742d252c7220a2 *splice-api-token-allocation-instruction-v1-1.0.0.dar
+c3f3b447142577ea4fa7d912ca11cd6821de7588e324e8877425932a02fccaa1 *splice-api-token-allocation-v1-1.0.0.dar
+6fa5cc9c75f5b71b3eca24a93ddc0404f34b77541323aa7080b0a924b70c7b13 *splice-api-token-burn-mint-v1-1.0.0.dar
+ef75f8eb41a65810221784fdb78bb9dfac7cb22245aba14fa7cb7f69c34e0175 *splice-api-token-holding-v1-1.0.0.dar
+455eb160cb5abd4ae9918a6fbb9dad471f721adda39f0e5c76feef08d05637fc *splice-api-token-metadata-v1-1.0.0.dar
+e4c73aa7ae73fb2fc330b938ffb99f568792321640ba4b9472902aa8d742c994 *splice-api-token-transfer-instruction-v1-1.0.0.dar
+39fe005a1999345a8188b6c3f861730804675403004afb0fda03ad67f2099fe7 *splice-util-0.1.4.dar
+12b75fc46bb2b825834e1ad2258057d97b35d09b354fc8628f48e767808569f8 *testlib-0.1.0.dar
+97c51434dfbb10018b9c8d309dff68ded01c45d75ab68fb8bb3df0d92708e469 *utility-credential-v0-0.1.0.dar
+f30ad3aa2e1eaaba791b6dfe0ce34cf0c1b24bc16cd961e7301ce68b0ecccb74 *utility-registry-app-v0-0.7.0.dar
+b9f63ae331bf168907bca342d3ee3f88da6782353ee4dd7cf0e4df005715f04e *utility-registry-holding-v0-0.2.1.dar
+03c0c677c7e4a8671cc4be29f9e9588400869d7f9903b784b200f30226e35707 *utility-registry-v0-0.6.0.dar

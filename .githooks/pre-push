@@ -1,0 +1,3 @@
+#!/bin/sh
+# Block pushes that contain secrets. Enable with: git config core.hooksPath .githooks
+exec node scripts/check-secrets.mjs

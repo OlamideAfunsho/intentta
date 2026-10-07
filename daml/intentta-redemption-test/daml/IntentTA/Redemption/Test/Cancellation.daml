@@ -1,0 +1,158 @@
+-- Copyright (c) 2026 IntentTA contributors.
+-- SPDX-License-Identifier: Apache-2.0
+
+-- | Cancellation, and the race between cancelling and redeeming.
+--
+-- Daml Script submits one transaction at a time, so these tests cover both
+-- orders of the race. The concurrent version, with both commands in flight
+-- on a real Canton ledger, is in `scripts/e2e.mjs`.
+module IntentTA.Redemption.Test.Cancellation where
+
+import DA.List (sort)
+import Daml.Script
+
+import Governance.Action (GovernableAction)
+import Governance.ExecutionResult (GovernanceExecutionResult(..))
+
+import IntentTA.Redemption.Action
+import IntentTA.Redemption.Approved
+import IntentTA.Redemption.Cleanup
+import IntentTA.Redemption.Intent
+import IntentTA.Redemption.Policy
+import IntentTA.Redemption.Receipt
+import IntentTA.Redemption.Test.Setup
+import IntentTA.Redemption.Types
+
+-- | Before approval, the investor simply withdraws the request.
+test_investor_withdraws_request : Script ()
+test_investor_withdraws_request = do
+  w <- setupWorld
+  terms <- termsFor w w.investor "CAN-001" 100.0 100.0
+  intentCid <- requestRedemption terms
+  mustFailWith "outsider withdrawing the request" notVisible =<< trySubmit w.outsider (exerciseCmd intentCid InvestorIntent_Cancel)
+  mustFailWith "issuer withdrawing the request" notAuthorized =<< trySubmit w.issuer (exerciseCmd intentCid InvestorIntent_Cancel)
+  submit w.investor $ exerciseCmd intentCid InvestorIntent_Cancel
+  shouldEqual "request gone" 0 . length =<< query @InvestorIntent w.investor
+  shouldEqual "shares untouched" 100.0 =<< unlockedBalance w.share w.investor
+
+-- | Race, cancel first: the cancellation wins and the later redeem fails.
+-- Authorization ends at once; the cash is cleaned up as a separate step.
+test_cancel_then_redeem : Script ()
+test_cancel_then_redeem = do
+  w <- setupWorld
+  terms <- termsFor w w.investor "CAN-002" 100.0 100.0
+  (approvedCid, approval) <- approved w terms
+
+  cleanupCid <- submit w.investor $ exerciseCmd approvedCid ApprovedRedemption_Cancel
+  mustFailWith "redeem after cancel" consumed =<< tryRedeem w w.investor approvedCid approval
+
+  -- Authorization is cancelled...
+  shouldEqual "approval gone" 0 . length =<< query @ApprovedRedemption w.investor
+  shouldEqual "shares untouched" 100.0 =<< unlockedBalance w.share w.investor
+  shouldEqual "nothing paid" 0.0 =<< balance w.cash w.investor
+  -- ...while the reservation is still open, tracked on its own contract.
+  shouldEqual "cash still locked" 900.0 =<< unlockedBalance w.cash w.issuer
+  (_, before) <- currentPolicy w
+  shouldEqual "slot still open" (100.0, 1) (before.outstanding, before.openReservations)
+  Some cleanup <- queryContractId w.issuer cleanupCid
+  shouldEqual "cleanup reason" InvestorCancelled cleanup.reason
+
+  -- Cleanup: only keepers, and only once.
+  mustFailWith "outsider cleaning up" "Actor is not a keeper" =<< tryReleaseCleanup w w.outsider cleanupCid
+  mustFailWith "investor cleaning up" "Actor is not a keeper" =<< tryReleaseCleanup w w.investor cleanupCid
+  released <- releaseCleanup w cleanupCid
+  shouldEqual "cash returned to the issuer" 1000.0 =<< unlockedBalance w.cash w.issuer
+  assertMsg "withdrawn holdings returned" (not (null released.senderHoldingCids))
+  (_, after) <- currentPolicy w
+  shouldEqual "budget returned" (0.0, 0) (after.outstanding, after.openReservations)
+  mustFailWith "second cleanup" consumed =<< tryReleaseCleanup w w.m1 cleanupCid
+
+-- | Race, redeem first: the settlement wins and the later cancel fails.
+test_redeem_then_cancel : Script ()
+test_redeem_then_cancel = do
+  w <- setupWorld
+  terms <- termsFor w w.investor "CAN-003" 100.0 100.0
+  (approvedCid, approval) <- approved w terms
+
+  _ <- mustSucceed "redeem" =<< tryRedeem w w.investor approvedCid approval
+  mustFailWith "cancel after redeem" consumed =<< trySubmit w.investor (exerciseCmd approvedCid ApprovedRedemption_Cancel)
+  mustFailWith "expire after redeem" consumed =<< trySubmit (actAs w.m1 <> readAs w.issuer)
+    (exerciseCmd approvedCid ApprovedRedemption_Expire with actor = w.m1)
+
+  shouldEqual "settled exactly once" (0.0, 100.0)
+    =<< ((,) <$> balance w.share w.investor <*> balance w.cash w.investor)
+  shouldEqual "one receipt" 1 . length =<< query @RedemptionReceipt w.investor
+  shouldEqual "no cleanup item" 0 . length =<< query @ReservationCleanup w.issuer
+
+-- | Only the investor can cancel their approval.
+test_only_the_investor_cancels : Script ()
+test_only_the_investor_cancels = do
+  w <- setupWorld
+  terms <- termsFor w w.investor "CAN-004" 100.0 100.0
+  (approvedCid, _) <- approved w terms
+  mustFailWith "outsider cancelling" notVisible =<< trySubmit w.outsider (exerciseCmd approvedCid ApprovedRedemption_Cancel)
+  mustFailWith "member cancelling" notAuthorized =<< trySubmit (actAs w.m1 <> readAs w.issuer) (exerciseCmd approvedCid ApprovedRedemption_Cancel)
+  mustFailWith "other investor cancelling" notVisible =<< trySubmit w.investor2 (exerciseCmd approvedCid ApprovedRedemption_Cancel)
+  shouldEqual "approval intact" 1 . length =<< query @ApprovedRedemption w.investor
+
+-- | The issuer revokes an unused approval through a 2-of-3 vote.
+test_committee_revokes_approval : Script ()
+test_committee_revokes_approval = do
+  w <- setupWorld
+  terms <- termsFor w w.investor "CAN-005" 100.0 100.0
+  (approvedCid, approval) <- approved w terms
+
+  proposal <- submit w.m2 do
+    createCmd RevokeRedemptionAction with
+      governanceParty = w.issuer
+      proposer = w.m2
+      approvedCid
+      reason = "Fund suspended redemptions"
+  let proposalCid : ContractId GovernableAction = toInterfaceContractId proposal
+  c1 <- confirm w proposalCid w.m2
+  mustFailWith "revoking with 1 of 3" "Enough confirmations to execute action"
+    =<< tryExecute w proposalCid [c1] w.m2
+  c3 <- confirm w proposalCid w.m3
+  _ <- mustSucceed "revocation" =<< tryExecute w proposalCid [c1, c3] w.m2
+
+  mustFailWith "redeem after revocation" consumed =<< tryRedeem w w.investor approvedCid approval
+  shouldEqual "shares untouched" 100.0 =<< unlockedBalance w.share w.investor
+  [(cleanupCid, cleanup)] <- query @ReservationCleanup w.issuer
+  shouldEqual "cleanup reason" IssuerRevoked cleanup.reason
+  _ <- releaseCleanup w cleanupCid
+  shouldEqual "cash returned" 1000.0 =<< unlockedBalance w.cash w.issuer
+  audit <- query @GovernanceExecutionResult w.issuer
+  shouldEqual "audit trail" ["ApproveRedemption", "RevokeRedemption"] (sort (map ((.actionLabel) . snd) audit))
+
+-- | Budget can only be released against evidence. A keeper cannot release
+-- the slot of a live approval, cannot use another redemption's receipt, and
+-- cannot release twice.
+test_budget_release_needs_evidence : Script ()
+test_budget_release_needs_evidence = do
+  w <- setupWorldWith 1000.0 200.0
+  termsA <- termsFor w w.investor "CAN-006a" 100.0 100.0
+  (approvedA, approvalA) <- approved w termsA
+  termsB <- termsFor w w.investor "CAN-006b" 50.0 50.0
+  (_, approvalB) <- approved w termsB
+
+  resultA <- mustSucceed "redeem A" =<< tryRedeem w w.investor approvedA approvalA
+  (policyCid, _) <- currentPolicy w
+  let release actor slotCid receiptCid = trySubmit (actAs actor <> readAs w.issuer) do
+        exerciseCmd policyCid RedemptionPolicy_ReleaseRedeemed with actor; slotCid; receiptCid
+
+  -- A's receipt does not release B's still-live slot.
+  mustFailWith "releasing a live slot with another receipt" "Receipt does not settle this slot"
+    =<< release w.m1 approvalB.slotCid resultA.receiptCid
+  mustFailWith "non-keeper releasing" "Actor is not a keeper"
+    =<< release w.outsider approvalA.slotCid resultA.receiptCid
+  -- Releasing by issuer authority alone is a governance matter, not a
+  -- keeper's: a keeper cannot call the issuer-controlled choice.
+  mustFailWith "keeper calling the issuer-only release" notAuthorized =<< trySubmit (actAs w.m1 <> readAs w.issuer) do
+    exerciseCmd policyCid RedemptionPolicy_Release with slotCid = approvalB.slotCid
+
+  _ <- mustSucceed "release A" =<< release w.m1 approvalA.slotCid resultA.receiptCid
+  (newPolicyCid, policy) <- currentPolicy w
+  shouldEqual "only B outstanding" (50.0, 1) (policy.outstanding, policy.openReservations)
+  mustFailWith "releasing A twice" consumed =<< trySubmit (actAs w.m1 <> readAs w.issuer) do
+    exerciseCmd newPolicyCid RedemptionPolicy_ReleaseRedeemed with
+      actor = w.m1; slotCid = approvalA.slotCid; receiptCid = resultA.receiptCid

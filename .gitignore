@@ -1,0 +1,36 @@
+# Daml build output
+.daml/
+*.dar
+!daml/dars/*.dar
+daml/**/.lib/
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Local runtime state: ledger data, logs, party ids, tokens
+.local/
+log/
+*.log
+*.pid
+
+# Secrets and credentials. Nothing in this repo needs any; these patterns are
+# here so that a DevNet setup never gets committed by accident.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.jks
+*.token
+*credentials*.json
+*.secret
+secrets.*
+devnet.local.*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

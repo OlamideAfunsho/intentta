@@ -1,0 +1,15 @@
+// Create the synchronizer DecMan calls "global" and connect all participants.
+import com.digitalasset.canton.config.RequireTypes.PositiveInt
+import com.digitalasset.canton.version.ProtocolVersion
+
+bootstrap.synchronizer(
+  synchronizerName = "global",
+  sequencers = Seq(sequencer1),
+  mediators = Seq(mediator1),
+  synchronizerOwners = Seq(sequencer1, mediator1),
+  synchronizerThreshold = PositiveInt.one,
+  staticSynchronizerParameters = StaticSynchronizerParameters.defaultsWithoutKMS(ProtocolVersion.latest),
+)
+participants.all.synchronizers.connect_local(sequencer1, alias = "global")
+
+println("DECMAN-LOCALNET-READY")

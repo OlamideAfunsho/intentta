@@ -1,0 +1,113 @@
+-- Copyright (c) 2026 IntentTA contributors.
+-- SPDX-License-Identifier: Apache-2.0
+
+-- | Bootstrap for a local Canton ledger. Runs the same setup as the tests
+-- (Registry, FundShare, TestUSD, DecMan `GovernanceRules` 2-of-3, policy,
+-- balances) against a real participant and returns everything the demo and
+-- the end-to-end script need to find it again.
+--
+-- Run with:
+--   daml script --dar <test dar> --script-name IntentTA.Redemption.Test.LocalNet:bootstrap \
+--     --ledger-host localhost --ledger-port 6865 --output-file .local/localnet.json
+module IntentTA.Redemption.Test.LocalNet where
+
+import Daml.Script
+
+import Governance.Rules (GovernanceRules)
+import Splice.Amulet (FeaturedAppRight)
+import Splice.Api.Token.HoldingV1 (InstrumentId)
+import TestLib.Token (SetupTokenResult(..))
+import TestLib.TokenOps (mintTokens)
+import Utility.Credential.V0.Credential (Credential)
+import Utility.Registry.App.V0.Service.AllocationFactory (AllocationFactory)
+import Utility.Registry.V0.Configuration.AppReward (AppRewardConfiguration)
+import Utility.Registry.V0.Configuration.Instrument (InstrumentConfiguration)
+import Utility.Registry.V0.Holding.TokenApiUtils
+import Utility.Registry.V0.Rule.Transfer (TransferRule)
+
+import IntentTA.Redemption.Policy (RedemptionPolicy)
+import IntentTA.Redemption.Test.Setup
+
+-- | Registry reference data for one instrument: what the Registry's
+-- off-ledger API serves as choice context and disclosed contracts.
+data InstrumentRefs = InstrumentRefs
+  with
+    instrumentId : InstrumentId
+    registrar : Party
+    allocationFactoryCid : ContractId AllocationFactory
+    instrumentConfigurationCid : ContractId InstrumentConfiguration
+    transferRuleCid : ContractId TransferRule
+    appRewardConfigurationCid : ContractId AppRewardConfiguration
+    featuredAppRightCid : ContractId FeaturedAppRight
+    providerCredentialCids : [ContractId Credential]
+  deriving (Eq, Show)
+
+-- | The Registry's choice-context keys, exported so that off-ledger code
+-- does not hard-code them.
+data ContextKeys = ContextKeys
+  with
+    instrumentConfiguration : Text
+    issuerCredentials : Text
+    senderCredentials : Text
+    receiverCredentials : Text
+    transferRule : Text
+    appRewardConfiguration : Text
+    featuredAppRight : Text
+  deriving (Eq, Show)
+
+data LocalNet = LocalNet
+  with
+    issuer : Party
+    members : [Party]
+    investor : Party
+    investor2 : Party
+    outsider : Party
+    operator : Party
+    cashAdmin : Party
+    dso : Party
+    rulesCid : ContractId GovernanceRules
+    policyCid : ContractId RedemptionPolicy
+    share : InstrumentRefs
+    cash : InstrumentRefs
+    contextKeys : ContextKeys
+  deriving (Eq, Show)
+
+refs : SetupTokenResult -> InstrumentRefs
+refs t = InstrumentRefs with
+  instrumentId = t.instrumentId
+  registrar = t.registrar
+  allocationFactoryCid = t.allocationFactoryCid
+  instrumentConfigurationCid = t.instrumentConfigurationCid
+  transferRuleCid = t.transferRuleCid
+  appRewardConfigurationCid = t.appRewardConfigurationCid
+  featuredAppRightCid = t.featuredAppRightCid
+  providerCredentialCids = t.providerCredentialCids
+
+-- | Issuer treasury of 1000 TestUSD; investor 1 holds 400 FundShare and
+-- investor 2 holds 100, enough for every scenario in the demo.
+bootstrap : Script LocalNet
+bootstrap = do
+  w <- setupWorldWith 1000.0 400.0
+  _ <- mintTokens w.investor2 100.0 w.share None
+  (policyCid, _) <- currentPolicy w
+  pure LocalNet with
+    issuer = w.issuer
+    members = [w.m1, w.m2, w.m3]
+    investor = w.investor
+    investor2 = w.investor2
+    outsider = w.outsider
+    operator = w.operator
+    cashAdmin = w.cashAdmin
+    dso = w.dso
+    rulesCid = w.rulesCid
+    policyCid
+    share = refs w.share
+    cash = refs w.cash
+    contextKeys = ContextKeys with
+      instrumentConfiguration = instrumentConfigurationContextKey
+      issuerCredentials = issuerCredentialsContextKey
+      senderCredentials = senderCredentialsContextKey
+      receiverCredentials = receiverCredentialsContextKey
+      transferRule = transferRuleContextKey
+      appRewardConfiguration = appRewardConfigurationContextKey
+      featuredAppRight = featuredAppRightContextKey

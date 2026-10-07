@@ -1,0 +1,117 @@
+-- Copyright (c) 2026 IntentTA contributors.
+-- SPDX-License-Identifier: Apache-2.0
+
+-- | DecMan custom actions. These are the only integration points with the
+-- Decentralization Manager: both templates implement its `GovernableAction`
+-- interface, so the stock `GovernanceRules` engine and the stock DecMan
+-- confirm/execute endpoints drive them with no change to DecMan.
+module IntentTA.Redemption.Action where
+
+import Governance.Action
+import Splice.Api.Token.AllocationInstructionV1 (AllocationFactory, AllocationFactory_Allocate(..), AllocationInstructionResult_Output(..))
+import Splice.Api.Token.HoldingV1 qualified as Api (Holding)
+import Splice.Api.Token.MetadataV1 (AnyContractId, ExtraArgs)
+
+import IntentTA.Redemption.Approved (ApprovedRedemption, ApprovedRedemption_Revoke(..))
+import IntentTA.Redemption.Intent
+import IntentTA.Redemption.Policy
+import IntentTA.Redemption.Types
+
+-- | Proposal to approve and fund one redemption request.
+--
+-- Executing it does three things in one transaction: it opens a reservation
+-- slot under the issuer's policy, reserves the exact payout as a token
+-- standard allocation, and exchanges the investor's request for a single-use
+-- `ApprovedRedemption`. If the cash cannot be reserved, the transaction is
+-- rejected and the request stays pending, so an approval that exists is
+-- always a funded one.
+template ApproveRedemptionAction
+  with
+    governanceParty : Party
+      -- ^ The issuer, acting only through committee votes.
+    proposer : Party
+      -- ^ The committee member proposing the approval.
+    intentCid : ContractId InvestorIntent
+      -- ^ The investor request to approve.
+    terms : RedemptionTerms
+      -- ^ The terms the committee is voting on. Execution fails unless the
+      -- request carries exactly these terms.
+    policyCid : ContractId RedemptionPolicy
+      -- ^ The issuer's current redemption policy.
+    cashFactoryCid : ContractId AllocationFactory
+      -- ^ The allocation factory of the cash instrument.
+    cashHoldingCids : [ContractId Api.Holding]
+      -- ^ Issuer cash holdings to reserve from.
+    allocateExtraArgs : ExtraArgs
+      -- ^ Registry choice context for creating the allocation.
+  where
+    signatory proposer
+    observer governanceParty
+    ensure validTerms terms && terms.issuer == governanceParty
+
+    interface instance GovernableAction for ApproveRedemptionAction where
+      view = GovernableActionView with
+        governanceParty
+        proposer
+        actionLabel = "ApproveRedemption"
+        description =
+          "Approve redemption " <> terms.requestId
+            <> ": burn " <> show terms.shareQuantity <> " " <> terms.shareInstrument.id
+            <> " held by " <> show terms.investor
+            <> " and pay " <> show terms.payoutAmount <> " " <> terms.cashInstrument.id
+            <> " to " <> show terms.payoutRecipient
+            <> ", valid until " <> show terms.expiresAt
+
+      executeImpl = do
+        -- The vote is bound to the request as the investor signed it.
+        intent <- fetch intentCid
+        assertMsg "Request terms differ from the terms that were voted on" (intent.terms == terms)
+
+        let intentRef : AnyContractId = coerceContractId intentCid
+        now <- getTime
+
+        -- 1. Policy limits and bounded expiry.
+        reserved <- exercise policyCid RedemptionPolicy_Reserve with intentRef; terms
+
+        -- 2. Reserve the exact payout.
+        allocated <- exercise cashFactoryCid AllocationFactory_Allocate with
+          expectedAdmin = terms.cashInstrument.admin
+          allocation = payoutAllocationSpec terms intentRef now reserved.approvalExpiresAt
+          requestedAt = now
+          inputHoldingCids = cashHoldingCids
+          extraArgs = allocateExtraArgs
+        allocationCid <- case allocated.output of
+          AllocationInstructionResult_Completed{allocationCid} -> pure allocationCid
+          _ -> abort "Cash reservation did not complete; refusing to create an unfunded approval"
+
+        -- 3. Consume the request and create the single-use approval.
+        _ <- exercise intentCid InvestorIntent_Approve with
+          slotCid = reserved.slotCid
+          allocationCid
+        pure ()
+
+-- | Proposal to revoke an approval that has not been used yet. The reserved
+-- cash becomes a `ReservationCleanup` item, as with any other cancellation.
+template RevokeRedemptionAction
+  with
+    governanceParty : Party
+    proposer : Party
+    approvedCid : ContractId ApprovedRedemption
+    reason : Text
+  where
+    signatory proposer
+    observer governanceParty
+    ensure reason /= ""
+
+    interface instance GovernableAction for RevokeRedemptionAction where
+      view = GovernableActionView with
+        governanceParty
+        proposer
+        actionLabel = "RevokeRedemption"
+        description = "Revoke approved redemption " <> show approvedCid <> ": " <> reason
+
+      executeImpl = do
+        approved <- fetch approvedCid
+        assertMsg "Approval belongs to another issuer" (approved.terms.issuer == governanceParty)
+        _ <- exercise approvedCid ApprovedRedemption_Revoke
+        pure ()

@@ -1,0 +1,631 @@
+{
+  "ledger": "http://localhost:7575",
+  "startedAt": "2026-10-07T01:58:58.586Z",
+  "parties": {
+    "issuer": "FundIssuer-d4d95138::1220a9e6d5fb2da0bd427cce2f284f0508827087edccfac41f37110dc2dd0be2a1c5",
+    "investor": "Investor-c812a76d::1220a9e6d5fb2da0bd427cce2f284f0508827087edccfac41f37110dc2dd0be2a1c5",
+    "investor2": "Investor2-40b5f04b::1220a9e6d5fb2da0bd427cce2f284f0508827087edccfac41f37110dc2dd0be2a1c5",
+    "outsider": "Outsider-9cefe94d::1220a9e6d5fb2da0bd427cce2f284f0508827087edccfac41f37110dc2dd0be2a1c5",
+    "operator": "RegistryOperator-fb9a0f58::1220a9e6d5fb2da0bd427cce2f284f0508827087edccfac41f37110dc2dd0be2a1c5",
+    "cashAdmin": "CashAdmin-05e8b107::1220a9e6d5fb2da0bd427cce2f284f0508827087edccfac41f37110dc2dd0be2a1c5",
+    "members": [
+      "Member1-9b3970be::1220a9e6d5fb2da0bd427cce2f284f0508827087edccfac41f37110dc2dd0be2a1c5",
+      "Member2-4f1df03a::1220a9e6d5fb2da0bd427cce2f284f0508827087edccfac41f37110dc2dd0be2a1c5",
+      "Member3-1df42503::1220a9e6d5fb2da0bd427cce2f284f0508827087edccfac41f37110dc2dd0be2a1c5"
+    ]
+  },
+  "scenarios": [
+    {
+      "name": "S1",
+      "title": "100 FundShare burned for 100 TestUSD in one transaction",
+      "steps": [
+        {
+          "label": "investor creates InvestorIntent",
+          "tx": {
+            "updateId": "12206c84b63a136e75f9b331cb3504e22fa394c4e154630a11a4d2b4fbdceb9f8d72",
+            "offset": 111,
+            "effectiveAt": "2026-10-07T01:58:59.023150Z"
+          },
+          "intentCid": "002cb9b9b37d2ddcebb0ee3129ab83a5ab7218089c12709d5f79a9dd50fefd47cbca121220bfd638abfa363b40f82419f65d81d51a6adc9e2e3f68622dfb2f34afbf9fb499"
+        },
+        {
+          "label": "member 1 proposes ApproveRedemptionAction",
+          "tx": {
+            "updateId": "1220ad382e70f54e72b22e43ab64b48b0a386fd137a60874709530e6ee68d7b8e374",
+            "offset": 114,
+            "effectiveAt": "2026-10-07T01:58:59.563965Z"
+          },
+          "proposalCid": "00a3a6b78d98a0db958ee14fa5f04de7fb9f4579adea471d6c3fbb41b8d6ade2a0ca12122028c6285aa0fcdf4ceba77c1c8f223a875044a40be31cfa42fc1380f505eb8cce"
+        },
+        {
+          "label": "member 1 confirms (1 of 3)",
+          "tx": {
+            "updateId": "1220ed3163d6991616e5180a28a866192d81cdd2b2acc09bf27571578b73773ddbae",
+            "offset": 117,
+            "effectiveAt": "2026-10-07T01:58:59.960612Z"
+          }
+        },
+        {
+          "label": "execute below threshold",
+          "rejected": true,
+          "code": "DAML_FAILURE",
+          "reason": "DAML_FAILURE: Interpretation error: Error: User failure: UNHANDLED_EXCEPTION/DA.Exception.AssertionFailed:AssertionFailed (error category 9): The requirement 'Enough confirmations to execute action' was not met."
+        },
+        {
+          "label": "member 2 confirms (2 of 3)",
+          "tx": {
+            "updateId": "1220e8f65aafb82ace13b8c64ab225f29e2054fb4e8edd7d891d72cc5feb86b75b60",
+            "offset": 120,
+            "effectiveAt": "2026-10-07T01:59:00.610974Z"
+          }
+        },
+        {
+          "label": "member 3 executes: request consumed, cash reserved, approval created together",
+          "tx": {
+            "updateId": "1220dd4f73c1a1be0a96504e87be895801d1def0f075b0aae3b8cb2aabf82ca9573f",
+            "offset": 123,
+            "effectiveAt": "2026-10-07T01:59:01.061735Z"
+          },
+          "events": [
+            "exercise GovernanceRules_ExecuteConfirmedAction",
+            "exercise GovernanceConfirmation_Consume",
+            "exercise GovernanceConfirmation_Consume",
+            "exercise GovernableAction_Execute",
+            "exercise RedemptionPolicy_Reserve",
+            "created IntentTA.Redemption.Reservation:ReservationSlot",
+            "created IntentTA.Redemption.Policy:RedemptionPolicy",
+            "exercise AllocationFactory_Allocate",
+            "exercise AllocationFactory_AllocateInternal",
+            "exercise Archive",
+            "created Utility.Registry.Holding.V0.Holding:Holding",
+            "created Utility.Registry.Holding.V0.Holding:Holding",
+            "created Utility.Registry.V0.Holding.Allocation:DvpLegAllocation",
+            "exercise InvestorIntent_Approve",
+            "created IntentTA.Redemption.Approved:ApprovedRedemption",
+            "created Governance.ExecutionResult:GovernanceExecutionResult"
+          ]
+        },
+        {
+          "label": "investor redeems: burn offer created and accepted, cash transferred, receipt created in one transaction",
+          "tx": {
+            "updateId": "122054476d6305d81e5918eabfafdefeae89236b6c431e42dfce43ba0279ff74511a",
+            "offset": 126,
+            "effectiveAt": "2026-10-07T01:59:02.943614Z"
+          },
+          "receiptCid": "0038a33ea7b64f2bfedde035f169b3f80c3a4fd82c275818b6a96fe13e15ba75e6ca121220f588c7089cdef138a6689b9abd6c0756d4255073467e00525230ffb4a9b94175",
+          "submittedAs": {
+            "actAs": [
+              "Investor-c812a76d::1220a9e6d5fb2da0bd427cce2f284f0508827087edccfac41f37110dc2dd0be2a1c5"
+            ],
+            "readAs": []
+          },
+          "events": [
+            "exercise ApprovedRedemption_Redeem",
+            "exercise AllocationFactory_OfferBurn",
+            "created Utility.Registry.App.V0.Model.Burn:BurnOffer",
+            "exercise BurnOffer_Accept",
+            "exercise Archive",
+            "created Utility.Registry.Holding.V0.Holding:Holding",
+            "created Utility.Registry.App.V0.Model.Burn:ExecutedBurn",
+            "exercise Allocation_ExecuteTransfer",
+            "exercise TransferRule_ExecuteAllocation",
+            "exercise Archive",
+            "created Utility.Registry.Holding.V0.Holding:Holding",
+            "created IntentTA.Redemption.Receipt:RedemptionReceipt"
+          ]
+        },
+        {
+          "label": "second redeem",
+          "rejected": true,
+          "code": "CONTRACT_NOT_FOUND",
+          "reason": "CONTRACT_NOT_FOUND: Contract could not be found with id 0077e56c0429c0ea49e753d9e6a5a9cff69e1a809c1556b249f8ec35efbd45e82cca121220c917bb9c1c22b2f0a1b7f10d0863d01dc94804d29ba9b4dff851d00c8a6481db"
+        },
+        {
+          "label": "keeper returns the reservation budget against the receipt",
+          "tx": {
+            "updateId": "1220a05fe6a8a6b4739fdc7cee07b791811ed650c1dbf7566da28fd594235296a893",
+            "offset": 129,
+            "effectiveAt": "2026-10-07T01:59:04.146948Z"
+          }
+        }
+      ],
+      "balances": {
+        "before": {
+          "investorShares": {
+            "total": 400,
+            "unlocked": 400
+          },
+          "investorCash": {
+            "total": 0,
+            "unlocked": 0
+          },
+          "issuerCash": {
+            "total": 1000,
+            "unlocked": 1000
+          }
+        },
+        "afterApproval": {
+          "investorShares": {
+            "total": 400,
+            "unlocked": 400
+          },
+          "investorCash": {
+            "total": 0,
+            "unlocked": 0
+          },
+          "issuerCash": {
+            "total": 1000,
+            "unlocked": 900
+          }
+        },
+        "after": {
+          "investorShares": {
+            "total": 300,
+            "unlocked": 300
+          },
+          "investorCash": {
+            "total": 100,
+            "unlocked": 100
+          },
+          "issuerCash": {
+            "total": 900,
+            "unlocked": 900
+          }
+        }
+      },
+      "result": "passed"
+    },
+    {
+      "name": "S2",
+      "title": "Failed settlement: payout unavailable, shares are not burned",
+      "steps": [
+        {
+          "label": "issuer withdraws the cash allocation directly",
+          "tx": {
+            "updateId": "12203c3b1908ec86ded0c66ba4c49d36c551ea510e4a72be15e1b7286f77665e9d11",
+            "offset": 147,
+            "effectiveAt": "2026-10-07T01:59:06.851904Z"
+          }
+        },
+        {
+          "label": "redeem without payout",
+          "rejected": true,
+          "code": "CONTRACT_NOT_FOUND",
+          "reason": "CONTRACT_NOT_FOUND: Contract could not be found with id 0034a45d0e21200e15b4029ef9c87293378ca9c49c754361da5a81381ee935cbcdca1212201b20f109aff2bad4cc5aa9fb941b9a62a18b9b510f42baa6ab10ecc0b3dcfb0f"
+        },
+        {
+          "label": "investor cancels the unusable approval",
+          "tx": {
+            "updateId": "1220a41c4cde5b7cb1f441cb55cc241519ea921c48c9a18f510878d3652755694512",
+            "offset": 150,
+            "effectiveAt": "2026-10-07T01:59:07.575570Z"
+          }
+        },
+        {
+          "label": "keeper returns the budget (allocation already gone)",
+          "tx": {
+            "updateId": "1220e6078a3f5250b9e7f144f338ae6481d1ffaa16596d322a065a77a8139fd4c4ea",
+            "offset": 153,
+            "effectiveAt": "2026-10-07T01:59:07.953344Z"
+          }
+        }
+      ],
+      "balances": {
+        "before": {
+          "investorShares": {
+            "total": 300,
+            "unlocked": 300
+          },
+          "investorCash": {
+            "total": 100,
+            "unlocked": 100
+          },
+          "issuerCash": {
+            "total": 900,
+            "unlocked": 850
+          }
+        },
+        "after": {
+          "investorShares": {
+            "total": 300,
+            "unlocked": 300
+          },
+          "investorCash": {
+            "total": 100,
+            "unlocked": 100
+          },
+          "issuerCash": {
+            "total": 900,
+            "unlocked": 900
+          }
+        }
+      },
+      "result": "passed"
+    },
+    {
+      "name": "S3",
+      "title": "Cancellation: authorization ends at once, cash cleanup is a separate step",
+      "steps": [
+        {
+          "label": "investor cancels the approval",
+          "tx": {
+            "updateId": "1220a0fa1a335007dda731dbf65f0c50e22705ebb534193ab0a603b5353fff7956e6",
+            "offset": 171,
+            "effectiveAt": "2026-10-07T01:59:10.398706Z"
+          },
+          "cleanupCid": "009879ed4c2b0b277f7bb5b32d20fc8b4cc860610f85940bd208b1240c1b1a9e47ca1212200db9ed1c4f6a2ae6c4738c45580a8b74668b49972e4d884881e9c80b1f7d88dd"
+        },
+        {
+          "label": "redeem after cancel",
+          "rejected": true,
+          "code": "CONTRACT_NOT_FOUND",
+          "reason": "CONTRACT_NOT_FOUND: Contract could not be found with id 0009e5b371baf001b63e9f2063f87634e44379ceb9ee478b9b2bb077840d6bb17cca121220a5016fd2c788bce8deb55f20565691dccd31f6f4de511fcf54c92a22c6009360"
+        },
+        {
+          "label": "keeper withdraws the reservation and returns the budget",
+          "tx": {
+            "updateId": "1220331bbad88cf8748590ce90530c1239beb1f186c3162110d2a8f717dda4db86f4",
+            "offset": 174,
+            "effectiveAt": "2026-10-07T01:59:11.060928Z"
+          }
+        }
+      ],
+      "balances": {
+        "before": {
+          "investorShares": {
+            "total": 300,
+            "unlocked": 300
+          },
+          "investorCash": {
+            "total": 100,
+            "unlocked": 100
+          },
+          "issuerCash": {
+            "total": 900,
+            "unlocked": 850
+          }
+        },
+        "afterCancel": {
+          "investorShares": {
+            "total": 300,
+            "unlocked": 300
+          },
+          "investorCash": {
+            "total": 100,
+            "unlocked": 100
+          },
+          "issuerCash": {
+            "total": 900,
+            "unlocked": 850
+          }
+        },
+        "after": {
+          "investorShares": {
+            "total": 300,
+            "unlocked": 300
+          },
+          "investorCash": {
+            "total": 100,
+            "unlocked": 100
+          },
+          "issuerCash": {
+            "total": 900,
+            "unlocked": 900
+          }
+        }
+      },
+      "result": "passed"
+    },
+    {
+      "name": "S4",
+      "title": "Race: cancel and redeem submitted concurrently, exactly one wins",
+      "steps": [
+        {
+          "label": "round 1 (redeem head start 0 ms): cancel committed, the other was rejected"
+        },
+        {
+          "label": "round 2 (redeem head start 0 ms): cancel committed, the other was rejected"
+        },
+        {
+          "label": "round 3 (redeem head start 0 ms): cancel committed, the other was rejected"
+        },
+        {
+          "label": "round 4 (redeem head start 200 ms): redeem committed, the other was rejected"
+        },
+        {
+          "label": "round 5 (redeem head start 500 ms): redeem committed, the other was rejected"
+        },
+        {
+          "label": "round 6 (redeem head start 900 ms): redeem committed, the other was rejected"
+        }
+      ],
+      "rounds": [
+        {
+          "round": 1,
+          "redeemHeadStartMs": 0,
+          "winner": "cancel",
+          "loserRejectedWith": "LOCAL_VERDICT_LOCKED_CONTRACTS"
+        },
+        {
+          "round": 2,
+          "redeemHeadStartMs": 0,
+          "winner": "cancel",
+          "loserRejectedWith": "LOCAL_VERDICT_LOCKED_CONTRACTS"
+        },
+        {
+          "round": 3,
+          "redeemHeadStartMs": 0,
+          "winner": "cancel",
+          "loserRejectedWith": "LOCAL_VERDICT_LOCKED_CONTRACTS"
+        },
+        {
+          "round": 4,
+          "redeemHeadStartMs": 200,
+          "winner": "redeem",
+          "loserRejectedWith": "LOCAL_VERDICT_LOCKED_CONTRACTS"
+        },
+        {
+          "round": 5,
+          "redeemHeadStartMs": 500,
+          "winner": "redeem",
+          "loserRejectedWith": "CONTRACT_NOT_FOUND"
+        },
+        {
+          "round": 6,
+          "redeemHeadStartMs": 900,
+          "winner": "redeem",
+          "loserRejectedWith": "CONTRACT_NOT_FOUND"
+        }
+      ],
+      "result": "passed"
+    },
+    {
+      "name": "S5",
+      "title": "Direct calls: cash-only withdrawal and third-party redemption are rejected",
+      "steps": [
+        {
+          "label": "cash-only withdrawal",
+          "rejected": true,
+          "code": "DAML_AUTHORIZATION_ERROR",
+          "reason": "DAML_AUTHORIZATION_ERROR: Interpretation error: Error: node NodeId(0) (a236e8e22a3b5f199e37d5554e82bafd2df688f901de02b00be3964bdfa8c1ab:Utility.Registry.V0.Holding.Allocation:DvpLegAllocation) requires authorizers FundIssuer-d4d95138::1220a9e6d5fb2da0bd427cce2f284f0508827087edccfac41f37110dc2dd0be2a1c5,Investor-c812a76d::1220a9e6d5fb2da0bd427cce2f284f0508827087edccfac41f37110dc2dd0be2a1c5, but onl"
+        },
+        {
+          "label": "third-party redeem",
+          "rejected": true,
+          "code": "CONTRACT_NOT_FOUND",
+          "reason": "CONTRACT_NOT_FOUND: Contract could not be found with id 0063932aad20105ae44204bc498e5025b2ede15cc0a78bef1816736aec2761fe32ca12122020ab740321bab5e3ce39e484378056ed011dfd4990f14afc01aebde5203bdd87"
+        },
+        {
+          "label": "self-approval",
+          "rejected": true,
+          "code": "DAML_AUTHORIZATION_ERROR",
+          "reason": "DAML_AUTHORIZATION_ERROR: Interpretation error: Error: node NodeId(0) (14342bf94776d82f0da74367b964e2b4d515d0d309de1223fb5b4ab988987ec4:IntentTA.Redemption.Intent:InvestorIntent) requires authorizers FundIssuer-d4d95138::1220a9e6d5fb2da0bd427cce2f284f0508827087edccfac41f37110dc2dd0be2a1c5, but only Investor-c812a76d::1220a9e6d5fb2da0bd427cce2f284f0508827087edccfac41f37110dc2dd0be2a1c5 were given"
+        }
+      ],
+      "result": "passed"
+    },
+    {
+      "name": "S6",
+      "title": "Bounded expiry: an approval cannot outlive the investor deadline",
+      "steps": [
+        {
+          "label": "approval expires with the investor deadline",
+          "expiresAt": "2026-10-07T01:59:59.203Z"
+        },
+        {
+          "label": "redeem after expiry",
+          "rejected": true,
+          "code": "DAML_FAILURE",
+          "reason": "DAML_FAILURE: Interpretation error: Error: User failure: UNHANDLED_EXCEPTION/DA.Exception.AssertionFailed:AssertionFailed (error category 9): Approval has expired"
+        },
+        {
+          "label": "keeper expires the approval",
+          "tx": {
+            "updateId": "1220c0a3ff7608f38ec955962ab04e82a9a611e5a35563921d20717116cd7f5c81f5",
+            "offset": 357,
+            "effectiveAt": "2026-10-07T02:00:02.406555Z"
+          }
+        },
+        {
+          "label": "keeper returns cash and budget",
+          "tx": {
+            "updateId": "122053e41d4f8d47e20cff179e58b31e4ca578faf2cabc88dbe7e3160bd8329235b6",
+            "offset": 360,
+            "effectiveAt": "2026-10-07T02:00:02.759501Z"
+          }
+        }
+      ],
+      "result": "passed"
+    },
+    {
+      "name": "S7",
+      "title": "Privacy: party-scoped contract and transaction views",
+      "steps": [
+        {
+          "label": "investor transaction history contains no policy, slot, proposal, vote or rules contract"
+        },
+        {
+          "label": "outsider, other investor and registry operator see no redemption contracts or events"
+        },
+        {
+          "label": "investor sees only their own requests, approvals and receipts",
+          "kitContracts": [
+            "IntentTA.Redemption.Receipt:RedemptionReceipt",
+            "IntentTA.Redemption.Receipt:RedemptionReceipt",
+            "IntentTA.Redemption.Receipt:RedemptionReceipt",
+            "IntentTA.Redemption.Receipt:RedemptionReceipt"
+          ]
+        },
+        {
+          "label": "issuer (hosted on every committee member participant) sees all issuer-side contracts",
+          "kitContracts": [
+            "IntentTA.Redemption.Policy:RedemptionPolicy",
+            "IntentTA.Redemption.Receipt:RedemptionReceipt"
+          ]
+        }
+      ],
+      "views": {
+        "investor": {
+          "activeContracts": 13,
+          "kitContracts": [
+            "IntentTA.Redemption.Receipt:RedemptionReceipt",
+            "IntentTA.Redemption.Receipt:RedemptionReceipt",
+            "IntentTA.Redemption.Receipt:RedemptionReceipt",
+            "IntentTA.Redemption.Receipt:RedemptionReceipt"
+          ],
+          "transactions": 36,
+          "kitEvents": 57,
+          "templatesSeen": [
+            "IntentTA.Redemption.Approved:ApprovedRedemption",
+            "IntentTA.Redemption.Cleanup:ReservationCleanup",
+            "IntentTA.Redemption.Intent:InvestorIntent",
+            "IntentTA.Redemption.Receipt:RedemptionReceipt",
+            "Utility.Credential.V0.Credential:Credential",
+            "Utility.Registry.App.V0.Model.Burn:BurnOffer",
+            "Utility.Registry.App.V0.Model.Burn:ExecutedBurn",
+            "Utility.Registry.App.V0.Service.AllocationFactory:AllocationFactory",
+            "Utility.Registry.Holding.V0.Holding:Holding",
+            "Utility.Registry.V0.Holding.Allocation:DvpLegAllocation",
+            "Utility.Registry.V0.Rule.Transfer:TransferRule"
+          ]
+        },
+        "investor2": {
+          "activeContracts": 1,
+          "kitContracts": [],
+          "transactions": 1,
+          "kitEvents": 0,
+          "templatesSeen": [
+            "Utility.Credential.V0.Credential:Credential",
+            "Utility.Registry.App.V0.Service.AllocationFactory:AllocationFactory",
+            "Utility.Registry.Holding.V0.Holding:Holding"
+          ]
+        },
+        "outsider": {
+          "activeContracts": 0,
+          "kitContracts": [],
+          "transactions": 0,
+          "kitEvents": 0,
+          "templatesSeen": []
+        },
+        "cashAdmin": {
+          "activeContracts": 16,
+          "kitContracts": [],
+          "transactions": 32,
+          "kitEvents": 0,
+          "templatesSeen": [
+            "Splice.Amulet:FeaturedAppRight",
+            "Utility.Credential.V0.Credential:Credential",
+            "Utility.Registry.App.V0.Configuration.Provider:ProviderConfiguration",
+            "Utility.Registry.App.V0.Service.AllocationFactory:AllocationFactory",
+            "Utility.Registry.App.V0.Service.Provider:ProviderService",
+            "Utility.Registry.App.V0.Service.Provider:ProviderServiceRequest",
+            "Utility.Registry.App.V0.Service.Registrar:RegistrarService",
+            "Utility.Registry.App.V0.Service.Registrar:RegistrarServiceRequest",
+            "Utility.Registry.Holding.V0.Holding:Holding",
+            "Utility.Registry.V0.Configuration.AppReward:AppRewardConfiguration",
+            "Utility.Registry.V0.Configuration.Instrument:InstrumentConfiguration",
+            "Utility.Registry.V0.Holding.Allocation:DvpLegAllocation",
+            "Utility.Registry.V0.Rule.Transfer:TransferRule"
+          ]
+        },
+        "operator": {
+          "activeContracts": 28,
+          "kitContracts": [],
+          "transactions": 43,
+          "kitEvents": 0,
+          "templatesSeen": [
+            "Utility.Credential.V0.Credential:Credential",
+            "Utility.Registry.App.V0.Configuration.Operator:OperatorConfiguration",
+            "Utility.Registry.App.V0.Configuration.Provider:ProviderConfiguration",
+            "Utility.Registry.App.V0.Model.Burn:BurnOffer",
+            "Utility.Registry.App.V0.Model.Burn:ExecutedBurn",
+            "Utility.Registry.App.V0.Service.AllocationFactory:AllocationFactory",
+            "Utility.Registry.App.V0.Service.Provider:ProviderService",
+            "Utility.Registry.App.V0.Service.Provider:ProviderServiceRequest",
+            "Utility.Registry.App.V0.Service.Registrar:RegistrarService",
+            "Utility.Registry.App.V0.Service.Registrar:RegistrarServiceRequest",
+            "Utility.Registry.Holding.V0.Holding:Holding",
+            "Utility.Registry.V0.Configuration.AppReward:AppRewardConfiguration",
+            "Utility.Registry.V0.Configuration.Instrument:InstrumentConfiguration",
+            "Utility.Registry.V0.Holding.Allocation:DvpLegAllocation",
+            "Utility.Registry.V0.Rule.Transfer:TransferRule"
+          ]
+        },
+        "issuer": {
+          "activeContracts": 35,
+          "kitContracts": [
+            "IntentTA.Redemption.Policy:RedemptionPolicy",
+            "IntentTA.Redemption.Receipt:RedemptionReceipt",
+            "IntentTA.Redemption.Receipt:RedemptionReceipt",
+            "IntentTA.Redemption.Receipt:RedemptionReceipt",
+            "IntentTA.Redemption.Receipt:RedemptionReceipt"
+          ],
+          "transactions": 94,
+          "kitEvents": 153,
+          "templatesSeen": [
+            "Governance.Confirmation:GovernanceConfirmation",
+            "Governance.ExecutionResult:GovernanceExecutionResult",
+            "Governance.Rules:GovernanceRules",
+            "IntentTA.Redemption.Action:ApproveRedemptionAction",
+            "IntentTA.Redemption.Approved:ApprovedRedemption",
+            "IntentTA.Redemption.Cleanup:ReservationCleanup",
+            "IntentTA.Redemption.Intent:InvestorIntent",
+            "IntentTA.Redemption.Policy:RedemptionPolicy",
+            "IntentTA.Redemption.Receipt:RedemptionReceipt",
+            "IntentTA.Redemption.Reservation:ReservationSlot",
+            "Splice.Amulet:FeaturedAppRight",
+            "Utility.Credential.V0.Credential:Credential",
+            "Utility.Registry.App.V0.Configuration.Provider:ProviderConfiguration",
+            "Utility.Registry.App.V0.Model.Burn:BurnOffer",
+            "Utility.Registry.App.V0.Model.Burn:ExecutedBurn",
+            "Utility.Registry.App.V0.Service.AllocationFactory:AllocationFactory",
+            "Utility.Registry.App.V0.Service.Provider:ProviderService",
+            "Utility.Registry.App.V0.Service.Provider:ProviderServiceRequest",
+            "Utility.Registry.App.V0.Service.Registrar:RegistrarService",
+            "Utility.Registry.App.V0.Service.Registrar:RegistrarServiceRequest",
+            "Utility.Registry.Holding.V0.Holding:Holding",
+            "Utility.Registry.V0.Configuration.AppReward:AppRewardConfiguration",
+            "Utility.Registry.V0.Configuration.Instrument:InstrumentConfiguration",
+            "Utility.Registry.V0.Holding.Allocation:DvpLegAllocation",
+            "Utility.Registry.V0.Rule.Transfer:TransferRule"
+          ]
+        },
+        "member1": {
+          "activeContracts": 0,
+          "kitContracts": [],
+          "transactions": 41,
+          "kitEvents": 106,
+          "templatesSeen": [
+            "Governance.Confirmation:GovernanceConfirmation",
+            "Governance.Rules:GovernanceRules",
+            "IntentTA.Redemption.Action:ApproveRedemptionAction",
+            "IntentTA.Redemption.Approved:ApprovedRedemption",
+            "IntentTA.Redemption.Cleanup:ReservationCleanup",
+            "IntentTA.Redemption.Intent:InvestorIntent",
+            "IntentTA.Redemption.Policy:RedemptionPolicy",
+            "IntentTA.Redemption.Reservation:ReservationSlot",
+            "Utility.Registry.App.V0.Service.AllocationFactory:AllocationFactory",
+            "Utility.Registry.Holding.V0.Holding:Holding",
+            "Utility.Registry.V0.Holding.Allocation:DvpLegAllocation"
+          ]
+        }
+      },
+      "result": "passed"
+    }
+  ],
+  "finishedAt": "2026-10-07T02:00:04.199Z",
+  "final": {
+    "investorShares": {
+      "total": 270,
+      "unlocked": 270
+    },
+    "investorCash": {
+      "total": 130,
+      "unlocked": 130
+    },
+    "issuerCash": {
+      "total": 870,
+      "unlocked": 870
+    }
+  }
+}

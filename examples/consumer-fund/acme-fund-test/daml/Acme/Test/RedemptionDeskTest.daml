@@ -1,0 +1,59 @@
+-- Copyright (c) 2026 IntentTA contributors.
+-- SPDX-License-Identifier: Apache-2.0
+
+-- | Acme's desk, end to end, through the unmodified redemption kit.
+module Acme.Test.RedemptionDeskTest where
+
+import DA.Time (hours)
+import Daml.Script
+
+
+import Acme.RedemptionDesk
+import IntentTA.Redemption.Approved (ApprovedRedemption)
+import IntentTA.Redemption.Test.Setup
+
+openDesk : World -> Party -> Script (ContractId RedemptionDesk)
+openDesk w investor = submit w.issuer do
+  createCmd RedemptionDesk with
+    issuer = w.issuer
+    investor
+    shareInstrument = w.share.instrumentId
+    cashInstrument = w.cash.instrumentId
+    parValue = 1.25
+    minQuantity = 10.0
+    requestWindow = hours 24
+
+-- | 80 shares at 1.25 par: the kit burns 80 FundShare and pays 100 TestUSD.
+test_acme_redeems_at_par_through_the_kit : Script ()
+test_acme_redeems_at_par_through_the_kit = do
+  w <- setupWorld
+  deskCid <- openDesk w w.investor
+
+  intentCid <- submit w.investor do
+    exerciseCmd deskCid RedemptionDesk_RequestAtPar with quantity = 80.0; requestId = "ACME-0001"
+  Some intent <- queryContractId w.investor intentCid
+  shouldEqual "payout computed at par" 100.0 intent.terms.payoutAmount
+
+  -- From here on, only the kit's own contracts and helpers are used.
+  _ <- mustSucceed "committee approval" =<< tryApprove w intentCid intent.terms
+  (approvedCid, approval) <- theApproval w.investor "ACME-0001"
+  _ <- mustSucceed "settlement" =<< tryRedeem w w.investor approvedCid approval
+
+  shouldEqual "shares left" 20.0 =<< balance w.share w.investor
+  shouldEqual "cash received" 100.0 =<< balance w.cash w.investor
+  shouldEqual "issuer cash" 900.0 =<< balance w.cash w.issuer
+
+-- | Acme's own rule is enforced by Acme's package; the kit's rules still
+-- apply to whatever Acme produces.
+test_acme_rules_sit_on_top_of_the_kit : Script ()
+test_acme_rules_sit_on_top_of_the_kit = do
+  w <- setupWorld
+  deskCid <- openDesk w w.investor
+  mustFailWith "below Acme's minimum" "Below Acme's minimum redemption"
+    =<< trySubmit w.investor (exerciseCmd deskCid RedemptionDesk_RequestAtPar with quantity = 5.0; requestId = "ACME-0002")
+  -- Another investor cannot use this investor's desk.
+  mustFailWith "someone else's desk" notVisible
+    =<< trySubmit w.investor2 (exerciseCmd deskCid RedemptionDesk_RequestAtPar with quantity = 50.0; requestId = "ACME-0003")
+  -- A request through the desk is still just a request: no approval exists.
+  _ <- submit w.investor (exerciseCmd deskCid RedemptionDesk_RequestAtPar with quantity = 50.0; requestId = "ACME-0004")
+  shouldEqual "no approval without a vote" 0 . length =<< query @ApprovedRedemption w.investor

@@ -1,0 +1,168 @@
+-- Copyright (c) 2026 IntentTA contributors.
+-- SPDX-License-Identifier: Apache-2.0
+
+-- | Governed setup steps for an issuer that is a DecMan decentralized party.
+--
+-- Such an issuer cannot submit a command on its own: every act needs the
+-- committee. Before it can approve a redemption it has to become a Registry
+-- registrar, create its share instrument and redemption policy, issue shares
+-- and take delivery of cash. Each of those is a `GovernableAction` here, so
+-- the whole life of the fund on the ledger goes through the same 2-of-3 vote.
+--
+-- This package is kept apart from the redemption kit. The kit does not
+-- depend on it, and an issuer that is onboarded some other way has no use
+-- for it.
+module IntentTA.IssuerSetup where
+
+import DA.Time (RelTime, addRelTime, days, seconds)
+import Governance.Action
+import Splice.Api.Token.HoldingV1 (InstrumentId(..))
+import Splice.Api.Token.MetadataV1 (ExtraArgs, emptyMetadata)
+import Utility.Registry.App.V0.Model.Mint (Mint(..), MintOffer, MintOffer_Accept(..))
+import Utility.Registry.App.V0.Service.AllocationFactory (AllocationFactory, AllocationFactory_OfferMint(..))
+import Utility.Registry.App.V0.Service.Registrar (RegistrarService, RegistrarServiceRequest(..), RegistrarService_CreateInstrumentConfiguration(..))
+import Utility.Registry.Holding.V0.Types (InstrumentIdentifier(..))
+
+import IntentTA.Redemption.Policy (RedemptionPolicy(..))
+
+-- | Ask a Registry provider to onboard the issuer as a registrar.
+template RequestRegistrarServiceAction
+  with
+    governanceParty : Party
+    proposer : Party
+    operator : Party
+    provider : Party
+  where
+    signatory proposer
+    observer governanceParty
+
+    interface instance GovernableAction for RequestRegistrarServiceAction where
+      view = GovernableActionView with
+        governanceParty
+        proposer
+        actionLabel = "RequestRegistrarService"
+        description = "Request Registry registrar service from provider " <> show provider
+
+      executeImpl = do
+        _ <- create RegistrarServiceRequest with
+          operator
+          provider
+          registrar = governanceParty
+          createTransferRule = Some True
+          createAllocationFactory = Some True
+        pure ()
+
+-- | Create the share instrument and the redemption policy that governs it.
+template LaunchFundAction
+  with
+    governanceParty : Party
+    proposer : Party
+    registrarServiceCid : ContractId RegistrarService
+    shareId : Text
+    cashInstrument : InstrumentId
+    keepers : [Party]
+    maxApprovalTtl : RelTime
+    maxPerRedemption : Decimal
+    maxOutstanding : Decimal
+  where
+    signatory proposer
+    observer governanceParty
+    ensure shareId /= ""
+
+    interface instance GovernableAction for LaunchFundAction where
+      view = GovernableActionView with
+        governanceParty
+        proposer
+        actionLabel = "LaunchFund"
+        description =
+          "Create share instrument " <> shareId <> " and its redemption policy: pay in "
+            <> cashInstrument.id <> ", at most " <> show maxPerRedemption <> " per redemption and "
+            <> show maxOutstanding <> " reserved in total"
+
+      executeImpl = do
+        _ <- exercise registrarServiceCid RegistrarService_CreateInstrumentConfiguration with
+          instrumentId = shareId
+          additionalIdentifiers =
+            [ InstrumentIdentifier with
+                source = governanceParty
+                id = shareId
+                scheme = "RegistrarInternalScheme"
+            ]
+          issuerRequirements = []
+          holderRequirements = []
+        _ <- create RedemptionPolicy with
+          issuer = governanceParty
+          keepers
+          shareInstrument = InstrumentId with admin = governanceParty; id = shareId
+          cashInstrument
+          maxApprovalTtl
+          maxPerRedemption
+          maxOutstanding
+          outstanding = 0.0
+          openReservations = 0
+        pure ()
+
+-- | Offer newly issued shares to a holder, who accepts to receive them.
+template OfferSharesAction
+  with
+    governanceParty : Party
+    proposer : Party
+    factoryCid : ContractId AllocationFactory
+    shareId : Text
+    holder : Party
+    amount : Decimal
+    reference : Text
+    extraArgs : ExtraArgs
+  where
+    signatory proposer
+    observer governanceParty
+    ensure amount > 0.0
+
+    interface instance GovernableAction for OfferSharesAction where
+      view = GovernableActionView with
+        governanceParty
+        proposer
+        actionLabel = "OfferShares"
+        description = "Offer " <> show amount <> " " <> shareId <> " to " <> show holder
+
+      executeImpl = do
+        now <- getTime
+        _ <- exercise factoryCid AllocationFactory_OfferMint with
+          expectedAdmin = governanceParty
+          mint = Mint with
+            instrumentId = InstrumentId with admin = governanceParty; id = shareId
+            amount
+            holder
+            reference
+            requestedAt = now `addRelTime` seconds (-1)
+            executeBefore = now `addRelTime` days 1
+            meta = emptyMetadata
+          extraArgs
+        pure ()
+
+-- | Take delivery of cash that its registrar has offered to the issuer.
+template AcceptCashAction
+  with
+    governanceParty : Party
+    proposer : Party
+    mintOfferCid : ContractId MintOffer
+    amount : Decimal
+      -- ^ The amount the committee expects to receive.
+    extraArgs : ExtraArgs
+  where
+    signatory proposer
+    observer governanceParty
+
+    interface instance GovernableAction for AcceptCashAction where
+      view = GovernableActionView with
+        governanceParty
+        proposer
+        actionLabel = "AcceptCash"
+        description = "Accept " <> show amount <> " offered to the fund treasury"
+
+      executeImpl = do
+        offer <- fetch mintOfferCid
+        assertMsg "Offer is for another holder" (offer.mint.holder == governanceParty)
+        assertMsg "Offer is not for the expected amount" (offer.mint.amount == amount)
+        _ <- exercise mintOfferCid MintOffer_Accept with extraArgs
+        pure ()

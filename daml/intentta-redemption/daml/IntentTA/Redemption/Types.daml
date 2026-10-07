@@ -1,0 +1,96 @@
+-- Copyright (c) 2026 IntentTA contributors.
+-- SPDX-License-Identifier: Apache-2.0
+
+-- | Shared types for the redemption settlement kit.
+module IntentTA.Redemption.Types where
+
+import DA.Time (addRelTime, convertMicrosecondsToRelTime)
+import Splice.Api.Token.AllocationV1 (AllocationSpecification(..), Reference(..), SettlementInfo(..), TransferLeg(..))
+import Splice.Api.Token.HoldingV1 (InstrumentId(..))
+import Splice.Api.Token.MetadataV1 (AnyContractId, emptyMetadata)
+
+-- | The economic terms of one redemption. The investor signs them, the
+-- committee votes on them, and every later step compares against them by
+-- value, so nothing downstream can substitute an amount, instrument or party.
+data RedemptionTerms = RedemptionTerms
+  with
+    issuer : Party
+      -- ^ The fund issuer. Must be the admin (registrar) of the share instrument.
+    investor : Party
+      -- ^ The holder whose shares are burned.
+    shareInstrument : InstrumentId
+      -- ^ Exact share instrument to burn.
+    cashInstrument : InstrumentId
+      -- ^ Exact cash instrument to pay out.
+    shareQuantity : Decimal
+      -- ^ Shares to burn.
+    payoutAmount : Decimal
+      -- ^ Cash to pay.
+    payoutRecipient : Party
+      -- ^ Party that receives the cash. Usually the investor.
+    expiresAt : Time
+      -- ^ The investor's own deadline. No approval may outlive it.
+    requestId : Text
+      -- ^ Investor-chosen reference. Shows up as the burn reference and the
+      -- settlement reference of the cash allocation.
+  deriving (Eq, Show)
+
+-- | Well-formedness of redemption terms.
+validTerms : RedemptionTerms -> Bool
+validTerms t =
+  t.shareQuantity > 0.0
+    && t.payoutAmount > 0.0
+    && t.requestId /= ""
+    && t.shareInstrument.admin == t.issuer
+    && t.shareInstrument /= t.cashInstrument
+    && t.investor /= t.issuer
+    && t.payoutRecipient /= t.issuer
+
+-- | Transfer leg id used for the payout leg of every redemption.
+payoutLegId : Text
+payoutLegId = "redemption-payout"
+
+-- | The one allocation specification that funds the given terms. `intentRef`
+-- is the contract id of the investor's request, which makes the reservation
+-- unusable for any other request.
+payoutAllocationSpec : RedemptionTerms -> AnyContractId -> Time -> Time -> AllocationSpecification
+payoutAllocationSpec terms intentRef requestedAt settleBefore = AllocationSpecification with
+  settlement = SettlementInfo with
+    executor = terms.issuer
+    settlementRef = Reference with id = terms.requestId; cid = Some intentRef
+    requestedAt
+    -- The allocation is made in the same transaction, so its own deadline
+    -- only has to fall strictly between the request and the settlement
+    -- deadline, as the Registry requires.
+    allocateBefore = settleBefore `addRelTime` convertMicrosecondsToRelTime (-1)
+    settleBefore
+    meta = emptyMetadata
+  transferLegId = payoutLegId
+  transferLeg = TransferLeg with
+    sender = terms.issuer
+    receiver = terms.payoutRecipient
+    amount = terms.payoutAmount
+    instrumentId = terms.cashInstrument
+    meta = emptyMetadata
+
+-- | Does an allocation fund exactly these terms until at least `coverUntil`?
+-- Returns the first failed check, or None when the allocation matches.
+allocationMismatch : RedemptionTerms -> AnyContractId -> Time -> AllocationSpecification -> Optional Text
+allocationMismatch terms intentRef coverUntil spec
+  | spec.settlement.executor /= terms.issuer = Some "executor is not the issuer"
+  | spec.settlement.settlementRef /= Reference with id = terms.requestId; cid = Some intentRef =
+      Some "settlement reference is not this redemption request"
+  | spec.settlement.settleBefore < coverUntil = Some "reservation ends before the approval does"
+  | spec.transferLegId /= payoutLegId = Some "unexpected transfer leg"
+  | spec.transferLeg.sender /= terms.issuer = Some "sender is not the issuer"
+  | spec.transferLeg.receiver /= terms.payoutRecipient = Some "receiver is not the payout recipient"
+  | spec.transferLeg.amount /= terms.payoutAmount = Some "amount is not the payout amount"
+  | spec.transferLeg.instrumentId /= terms.cashInstrument = Some "instrument is not the cash instrument"
+  | otherwise = None
+
+-- | Why an approved redemption ended without settling.
+data CancellationReason
+  = InvestorCancelled
+  | ApprovalExpired
+  | IssuerRevoked
+  deriving (Eq, Show)

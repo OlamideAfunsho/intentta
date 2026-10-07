@@ -1,0 +1,73 @@
+-- Copyright (c) 2026 IntentTA contributors.
+-- SPDX-License-Identifier: Apache-2.0
+
+-- | Cash-reservation cleanup, tracked separately from authorization.
+--
+-- Cancelling an approval ends the investor's right to redeem immediately and
+-- cannot be blocked by anything on the cash side. The cash is still locked in
+-- its allocation at that point; this contract is the issuer's to-do item for
+-- getting it back.
+module IntentTA.Redemption.Cleanup where
+
+import Splice.Api.Token.AllocationV1 (Allocation, Allocation_Withdraw(..))
+import Splice.Api.Token.HoldingV1 qualified as Api (Holding)
+import Splice.Api.Token.MetadataV1 (AnyContractId, ExtraArgs)
+
+import IntentTA.Redemption.Policy
+import IntentTA.Redemption.Reservation (ReservationSlot)
+import IntentTA.Redemption.Types
+
+-- | A reservation whose approval is gone but whose cash is still locked.
+-- Signed by the issuer only: once the approval is cancelled, the reservation
+-- is the issuer's own business and the investor sees nothing further.
+template ReservationCleanup
+  with
+    issuer : Party
+    keepers : [Party]
+    terms : RedemptionTerms
+    intentRef : AnyContractId
+    slotCid : ContractId ReservationSlot
+    allocationCid : ContractId Allocation
+    reason : CancellationReason
+    cancelledAt : Time
+  where
+    signatory issuer
+    ensure terms.issuer == issuer
+
+    -- | Withdraw the allocation, returning the cash to the issuer, and return
+    -- the slot's budget to the policy. A keeper may do this without a vote:
+    -- the cash can only go back to the issuer.
+    choice ReservationCleanup_Release : ReservationCleanup_ReleaseResult
+      with
+        actor : Party
+        policyCid : ContractId RedemptionPolicy
+        extraArgs : ExtraArgs
+      controller actor
+      do
+        assertMsg "Actor is not a keeper" (actor `elem` keepers)
+        withdrawn <- exercise allocationCid Allocation_Withdraw with extraArgs
+        newPolicyCid <- exercise policyCid RedemptionPolicy_Release with slotCid
+        pure ReservationCleanup_ReleaseResult with
+          policyCid = newPolicyCid
+          senderHoldingCids = withdrawn.senderHoldingCids
+
+    -- | Return the slot's budget when the allocation no longer exists, for
+    -- example because the issuer withdrew it directly. Safe without a vote:
+    -- the approval this slot backed is already gone, so no claim on the cash
+    -- remains whether or not the allocation does.
+    choice ReservationCleanup_ReleaseSlotOnly : ContractId RedemptionPolicy
+      with
+        actor : Party
+        policyCid : ContractId RedemptionPolicy
+      controller actor
+      do
+        assertMsg "Actor is not a keeper" (actor `elem` keepers)
+        exercise policyCid RedemptionPolicy_Release with slotCid
+
+-- | Result of `ReservationCleanup_Release`.
+data ReservationCleanup_ReleaseResult = ReservationCleanup_ReleaseResult
+  with
+    policyCid : ContractId RedemptionPolicy
+    senderHoldingCids : [ContractId Api.Holding]
+      -- ^ The issuer's cash, unlocked again.
+  deriving (Eq, Show)

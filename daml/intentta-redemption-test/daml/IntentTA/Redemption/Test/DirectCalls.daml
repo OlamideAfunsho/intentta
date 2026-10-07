@@ -1,0 +1,301 @@
+-- Copyright (c) 2026 IntentTA contributors.
+-- SPDX-License-Identifier: Apache-2.0
+
+-- | Direct contract calls. These tests bypass `ApproveRedemptionAction` and
+-- the governance engine and call the underlying choices and Registry
+-- contracts directly, with the strongest authority each attacker could have.
+-- The safeguards have to hold in the contracts themselves, not in the path
+-- that normally leads to them.
+module IntentTA.Redemption.Test.DirectCalls where
+
+import DA.Time (hours, minutes, addRelTime)
+import Daml.Script
+
+import Splice.Api.Token.AllocationInstructionV1 qualified as Api
+import Splice.Api.Token.AllocationV1 (Allocation, AllocationSpecification(..), Allocation_Cancel(..), Allocation_ExecuteTransfer(..), Reference(..))
+import Splice.Api.Token.BurnMintV1 (BurnMintFactory, BurnMintFactory_BurnMint(..))
+import Splice.Api.Token.HoldingV1 qualified as Api (Holding)
+import Splice.Api.Token.MetadataV1 qualified as Meta (AnyContractId)
+import Splice.Api.Token.MetadataV1 (emptyMetadata)
+import Utility.Registry.App.V0.Model.Burn (Burn(..), BurnOffer, BurnOffer_Accept(..))
+import Utility.Registry.App.V0.Service.AllocationFactory (AllocationFactory_OfferBurn(..))
+
+import TestLib.TokenOps (createBurnMintExtraArgs)
+
+import IntentTA.Redemption.Approved
+import IntentTA.Redemption.Intent
+import IntentTA.Redemption.Policy
+import IntentTA.Redemption.Receipt
+import IntentTA.Redemption.Reservation
+import IntentTA.Redemption.Test.Setup
+import IntentTA.Redemption.Types
+
+-- | The issuer, acting directly, opens a slot for a request.
+directSlot : World -> ContractId InvestorIntent -> RedemptionTerms -> Script RedemptionPolicy_ReserveResult
+directSlot w intentCid terms = do
+  (policyCid, _) <- currentPolicy w
+  submit w.issuer do
+    exerciseCmd policyCid RedemptionPolicy_Reserve with
+      intentRef = coerceContractId intentCid
+      terms
+
+-- | The issuer, acting directly, creates whatever cash allocation it likes.
+directAllocation : World -> AllocationSpecification -> Script (ContractId Allocation)
+directAllocation w spec = do
+  now <- getTime
+  cashCids <- unlockedCids w.cash w.issuer
+  disclosed <- registryDisclosures w.cash
+  let factoryCid : ContractId Api.AllocationFactory = toInterfaceContractId w.cash.allocationFactoryCid
+  result <- submit (actAs w.issuer <> discloseMany disclosed) do
+    exerciseCmd factoryCid Api.AllocationFactory_Allocate with
+      expectedAdmin = w.cashAdmin
+      allocation = spec
+      requestedAt = now
+      inputHoldingCids = map toInterfaceContractId cashCids
+      extraArgs = transferArgs w.cash
+  case result.output of
+    Api.AllocationInstructionResult_Completed{allocationCid} -> pure allocationCid
+    _ -> abort "allocation did not complete"
+
+tryDirectApprove : World -> ContractId InvestorIntent -> ContractId ReservationSlot -> ContractId Allocation
+  -> Script (Either SubmitError (ContractId ApprovedRedemption))
+tryDirectApprove w intentCid slotCid allocationCid =
+  trySubmit w.issuer do
+    exerciseCmd intentCid InvestorIntent_Approve with slotCid; allocationCid
+
+-- | The exact specification the kit would create for these terms.
+goodSpec : RedemptionTerms -> ContractId InvestorIntent -> Time -> Time -> AllocationSpecification
+goodSpec terms intentCid now until =
+  payoutAllocationSpec terms (coerceContractId intentCid) now until
+
+-- | `InvestorIntent_Approve` refuses every reservation that does not fund
+-- exactly the investor's terms, even when the issuer calls it directly.
+test_direct_approve_rejects_mismatched_reservations : Script ()
+test_direct_approve_rejects_mismatched_reservations = do
+  w <- setupWorld
+  now <- getTime
+  terms <- termsFor w w.investor "DIR-001" 100.0 100.0
+  intentCid <- requestRedemption terms
+  slot <- directSlot w intentCid terms
+  let good = goodSpec terms intentCid now slot.approvalExpiresAt
+  let attempt label needle spec = do
+        allocationCid <- directAllocation w spec
+        mustFailWith label needle =<< tryDirectApprove w intentCid slot.slotCid allocationCid
+
+  attempt "reservation paying another recipient" "receiver is not the payout recipient"
+    (good with transferLeg = (good.transferLeg with receiver = w.outsider))
+  attempt "reservation for a smaller amount" "amount is not the payout amount"
+    (good with transferLeg = (good.transferLeg with amount = 1.0))
+  let early = now `addRelTime` minutes 5
+  let shortSettlement = good.settlement with allocateBefore = now `addRelTime` minutes 4; settleBefore = early
+  attempt "reservation that ends before the approval" "reservation ends before the approval does"
+    (good with settlement = shortSettlement)
+  let unboundRef = Reference with id = terms.requestId; cid = None
+  attempt "reservation with another settlement reference" "settlement reference is not this redemption request"
+    (good with settlement = (good.settlement with settlementRef = unboundRef))
+  attempt "reservation executed by someone else" "executor is not the issuer"
+    (good with settlement = (good.settlement with executor = w.outsider))
+
+  shouldEqual "request still pending" 1 . length =<< query @InvestorIntent w.investor
+  shouldEqual "no approval" 0 . length =<< query @ApprovedRedemption w.investor
+
+  -- With the exact reservation the same direct call succeeds: what protects
+  -- the investor is the validation, not the path.
+  allocationCid <- directAllocation w good
+  _ <- mustSucceed "direct approve with an exact reservation"
+    =<< tryDirectApprove w intentCid slot.slotCid allocationCid
+  pure ()
+
+-- | A reservation made for one request cannot back another, and neither can
+-- a slot. This is what stops one funded reservation from making two
+-- approvals look ready.
+test_reservation_cannot_back_two_requests : Script ()
+test_reservation_cannot_back_two_requests = do
+  w <- setupWorld
+  now <- getTime
+  -- Two requests with identical terms, including the request id.
+  terms <- termsFor w w.investor "DIR-002" 50.0 50.0
+  intentA <- requestRedemption terms
+  intentB <- requestRedemption terms
+
+  slotA <- directSlot w intentA terms
+  allocationA <- directAllocation w (goodSpec terms intentA now slotA.approvalExpiresAt)
+
+  -- A's slot and A's reservation, presented for B.
+  mustFailWith "slot of another request" "Reservation slot was issued for another request"
+    =<< tryDirectApprove w intentB slotA.slotCid allocationA
+  slotB <- directSlot w intentB terms
+  mustFailWith "reservation of another request" "settlement reference is not this redemption request"
+    =<< tryDirectApprove w intentB slotB.slotCid allocationA
+
+  _ <- mustSucceed "A with its own slot and reservation"
+    =<< tryDirectApprove w intentA slotA.slotCid allocationA
+  shouldEqual "one approval" 1 . length =<< query @ApprovedRedemption w.investor
+
+-- | Without a policy-issued slot there is no approval: the issuer cannot
+-- skip the limits by calling the request directly.
+test_direct_approve_requires_a_policy_slot : Script ()
+test_direct_approve_requires_a_policy_slot = do
+  w <- setupWorld
+  now <- getTime
+  terms <- termsFor w w.investor "DIR-003" 100.0 100.0
+  intentCid <- requestRedemption terms
+  allocationCid <- directAllocation w (goodSpec terms intentCid now (now `addRelTime` hours 2))
+
+  -- A slot the investor forges for themselves is signed by the wrong party.
+  mustFailWith "investor forging a slot" notAuthorized =<< trySubmit w.investor do
+    createCmd ReservationSlot with
+      issuer = w.issuer
+      keepers = []
+      intentRef = coerceContractId intentCid
+      terms
+      reservedAt = now
+      approvalExpiresAt = now `addRelTime` hours 2
+
+  -- A slot for different terms does not fit.
+  other <- termsFor w w.investor "DIR-003-other" 1.0 1.0
+  otherCid <- requestRedemption other
+  otherSlot <- directSlot w otherCid other
+  mustFailWith "slot for other terms" "Reservation slot was issued for another request"
+    =<< tryDirectApprove w intentCid otherSlot.slotCid allocationCid
+
+  -- The investor cannot approve their own request.
+  slot <- directSlot w intentCid terms
+  mustFailWith "investor approving their own request" notAuthorized =<< trySubmit w.investor do
+    exerciseCmd intentCid InvestorIntent_Approve with slotCid = slot.slotCid; allocationCid
+  shouldEqual "no approval" 0 . length =<< query @ApprovedRedemption w.investor
+
+-- | Cash-only withdrawal: the reserved cash cannot be taken without the burn.
+-- The investor cannot execute or cancel the allocation on their own, and
+-- nobody else can either.
+test_reserved_cash_cannot_be_taken_without_burning : Script ()
+test_reserved_cash_cannot_be_taken_without_burning = do
+  w <- setupWorld
+  terms <- termsFor w w.investor "DIR-004" 100.0 100.0
+  (_, approval) <- approved w terms
+  cashDisclosed <- registryDisclosures w.cash
+  allocationDisclosed <- allocationDisclosures w approval.allocationCid
+  let opts actor = actAs actor <> discloseMany (cashDisclosed <> allocationDisclosed)
+
+  mustFailWith "investor executing the allocation directly" notAuthorized =<< trySubmit (opts w.investor) do
+    exerciseCmd approval.allocationCid Allocation_ExecuteTransfer with extraArgs = transferArgs w.cash
+  mustFailWith "investor cancelling the allocation directly" notAuthorized =<< trySubmit (opts w.investor) do
+    exerciseCmd approval.allocationCid Allocation_Cancel with extraArgs = transferArgs w.cash
+  mustFailWith "outsider executing the allocation" notAuthorized =<< trySubmit (opts w.outsider) do
+    exerciseCmd approval.allocationCid Allocation_ExecuteTransfer with extraArgs = transferArgs w.cash
+  -- Not even the issuer can push the cash out one-sidedly.
+  mustFailWith "issuer executing the allocation without the investor" notAuthorized =<< trySubmit (opts w.issuer) do
+    exerciseCmd approval.allocationCid Allocation_ExecuteTransfer with extraArgs = transferArgs w.cash
+
+  shouldEqual "investor has no cash" 0.0 =<< balance w.cash w.investor
+  shouldEqual "investor keeps shares" 100.0 =<< unlockedBalance w.share w.investor
+  shouldEqual "cash still reserved" (1000.0, 900.0)
+    =<< ((,) <$> balance w.cash w.issuer <*> unlockedBalance w.cash w.issuer)
+
+-- | Unauthorized burning: an approval does not let anyone but the investor
+-- burn the investor's shares.
+test_shares_cannot_be_burned_without_the_investor : Script ()
+test_shares_cannot_be_burned_without_the_investor = do
+  w <- setupWorld
+  now <- getTime
+  terms <- termsFor w w.investor "DIR-005" 100.0 100.0
+  (approvedCid, approval) <- approved w terms
+  shareCids <- unlockedCids w.share w.investor
+
+  -- Redeem is the investor's choice alone.
+  mustFailWith "issuer redeeming" notAuthorized =<< tryRedeem w w.issuer approvedCid approval
+  mustFailWith "committee member redeeming" notVisible =<< tryRedeem w w.m1 approvedCid approval
+  mustFailWith "outsider redeeming" notVisible =<< tryRedeem w w.outsider approvedCid approval
+
+  -- The issuer is the share registrar. It can offer a burn directly, but an
+  -- offer burns nothing until the holder accepts it.
+  offered <- submit w.issuer do
+    exerciseCmd w.share.allocationFactoryCid AllocationFactory_OfferBurn with
+      expectedAdmin = w.issuer
+      burn = Burn with
+        instrumentId = w.share.instrumentId
+        amount = 100.0
+        holder = w.investor
+        reference = "forced"
+        requestedAt = now
+        executeBefore = now `addRelTime` hours 1
+        meta = emptyMetadata
+      extraArgs = burnArgs w.share
+  mustFailWith "issuer accepting its own burn offer" notAuthorized =<< trySubmit (actAs w.issuer <> readAs w.investor) do
+    exerciseCmd offered.burnOfferCid BurnOffer_Accept with
+      holdingCids = shareCids
+      extraArgs = burnArgs w.share
+  shouldEqual "an unaccepted offer exists" 1 . length =<< query @BurnOffer w.issuer
+
+  -- Nor can the registrar burn through the token standard's burn/mint
+  -- factory without the holder as an actor.
+  let factoryCid : ContractId BurnMintFactory = coerceContractId w.share.allocationFactoryCid
+  let holdingCids : [ContractId Api.Holding] = map toInterfaceContractId shareCids
+  mustFailWith "registrar burning without the holder" notAuthorized =<< trySubmit (actAs w.issuer <> readAs w.investor <> readAs w.operator) do
+    exerciseCmd factoryCid BurnMintFactory_BurnMint with
+      expectedAdmin = w.issuer
+      instrumentId = w.share.instrumentId
+      inputHoldingCids = holdingCids
+      outputs = []
+      extraActors = []
+      extraArgs = createBurnMintExtraArgs w.share
+
+  shouldEqual "investor keeps every share" 100.0 =<< unlockedBalance w.share w.investor
+
+-- | Repeat payouts: an approval pays once. Replaying the settlement, or
+-- re-requesting with the same terms, does not pay again.
+test_approval_pays_exactly_once : Script ()
+test_approval_pays_exactly_once = do
+  w <- setupWorldWith 1000.0 300.0
+  terms <- termsFor w w.investor "DIR-006" 100.0 100.0
+  (approvedCid, approval) <- approved w terms
+  _ <- mustSucceed "redeem" =<< tryRedeem w w.investor approvedCid approval
+
+  -- Replay of the same settlement, with shares still available to burn.
+  mustFailWith "second redeem of the same approval" consumed =<< tryRedeem w w.investor approvedCid approval
+  shouldEqual "paid once" 100.0 =<< balance w.cash w.investor
+  shouldEqual "burned once" 200.0 =<< balance w.share w.investor
+
+  -- A new request with identical terms is a new request: it has no approval
+  -- until the committee votes again.
+  _ <- requestRedemption terms
+  shouldEqual "no approval for the repeated request" 0 . length =<< query @ApprovedRedemption w.investor
+  shouldEqual "still paid once" 100.0 =<< balance w.cash w.investor
+
+-- | Approvals and receipts carry two signatures, so neither side can forge
+-- one, and a receipt cannot be edited or deleted afterwards.
+test_approvals_and_receipts_cannot_be_forged : Script ()
+test_approvals_and_receipts_cannot_be_forged = do
+  w <- setupWorld
+  now <- getTime
+  terms <- termsFor w w.investor "DIR-007" 100.0 100.0
+  intentCid <- requestRedemption terms
+  slot <- directSlot w intentCid terms
+  allocationCid <- directAllocation w (goodSpec terms intentCid now slot.approvalExpiresAt)
+  let intentRef : Meta.AnyContractId = coerceContractId intentCid
+  let forgedApproval = ApprovedRedemption with
+        terms
+        keepers = []
+        intentRef
+        slotCid = slot.slotCid
+        allocationCid
+        approvedAt = now
+        expiresAt = slot.approvalExpiresAt
+  let forgedReceipt = RedemptionReceipt with
+        terms
+        intentRef
+        slotCid = slot.slotCid
+        burnedQuantity = 100.0
+        paidAmount = 100.0
+        payoutHoldingCids = []
+        approvedAt = now
+        redeemedAt = now
+
+  mustFailWith "investor forging an approval" notAuthorized =<< trySubmit w.investor (createCmd forgedApproval)
+  mustFailWith "issuer forging an approval" notAuthorized =<< trySubmit w.issuer (createCmd forgedApproval)
+  mustFailWith "investor forging a receipt" notAuthorized =<< trySubmit w.investor (createCmd forgedReceipt)
+  mustFailWith "issuer forging a receipt" notAuthorized =<< trySubmit w.issuer (createCmd forgedReceipt)
+
+  -- A forged receipt would be the way to release budget for a reservation
+  -- that is still open; without one the keeper path is closed.
+  shouldEqual "no receipt" 0 . length =<< query @RedemptionReceipt w.issuer

@@ -1,0 +1,111 @@
+-- Copyright (c) 2026 IntentTA contributors.
+-- SPDX-License-Identifier: Apache-2.0
+
+-- | The completion standard: 100 FundShare burned for 100 TestUSD.
+module IntentTA.Redemption.Test.HappyPath where
+
+import DA.Time (hours, addRelTime)
+import Daml.Script
+
+import Governance.ExecutionResult (GovernanceExecutionResult(..))
+import Utility.Registry.App.V0.Model.Burn (ExecutedBurn(..))
+
+import IntentTA.Redemption.Approved
+import IntentTA.Redemption.Intent
+import IntentTA.Redemption.Policy
+import IntentTA.Redemption.Receipt
+import IntentTA.Redemption.Test.Setup
+
+-- | Request, 2-of-3 approval with reservation, and atomic burn-and-payout.
+test_redeem_100_shares_for_100_cash : Script ()
+test_redeem_100_shares_for_100_cash = do
+  w <- setupWorld
+  terms <- termsFor w w.investor "RED-001" 100.0 100.0
+
+  -- 1. The investor requests. Nothing moves.
+  intentCid <- requestRedemption terms
+  shouldEqual "investor keeps shares after requesting" 100.0 =<< unlockedBalance w.share w.investor
+
+  -- 2. The committee approves 2-of-3. Request consumed, cash reserved,
+  --    approval created, all in the one execution.
+  _ <- mustSucceed "approval" =<< tryApprove w intentCid terms
+  shouldEqual "request is consumed" 0 . length =<< query @InvestorIntent w.investor
+  shouldEqual "issuer still owns the cash" 1000.0 =<< balance w.cash w.issuer
+  shouldEqual "payout is locked in the reservation" 900.0 =<< unlockedBalance w.cash w.issuer
+  shouldEqual "investor keeps shares after approval" 100.0 =<< unlockedBalance w.share w.investor
+  shouldEqual "investor has no cash yet" 0.0 =<< balance w.cash w.investor
+  (_, policy) <- currentPolicy w
+  shouldEqual "policy tracks the reservation" (100.0, 1) (policy.outstanding, policy.openReservations)
+  audit <- query @GovernanceExecutionResult w.issuer
+  shouldEqual "DecMan audit record" ["ApproveRedemption"] (map ((.actionLabel) . snd) audit)
+
+  (approvedCid, approval) <- theApproval w.investor "RED-001"
+  shouldEqual "approval expiry is bounded by the policy" (approval.approvedAt `addRelTime` hours 2) approval.expiresAt
+
+  -- 3. The investor completes: burn and payout in one transaction.
+  result <- mustSucceed "redeem" =<< tryRedeem w w.investor approvedCid approval
+  shouldEqual "shares burned" 0.0 =<< balance w.share w.investor
+  shouldEqual "cash paid" 100.0 =<< unlockedBalance w.cash w.investor
+  shouldEqual "issuer cash reduced" 900.0 =<< balance w.cash w.issuer
+  shouldEqual "nothing left locked" 900.0 =<< unlockedBalance w.cash w.issuer
+  shouldEqual "approval is consumed" 0 . length =<< query @ApprovedRedemption w.investor
+
+  Some receipt <- queryContractId w.investor result.receiptCid
+  shouldEqual "receipt" (100.0, 100.0, "RED-001") (receipt.burnedQuantity, receipt.paidAmount, receipt.terms.requestId)
+  burns <- query @ExecutedBurn w.investor
+  shouldEqual "Registry burn record" [(100.0, "RED-001")] (map (\(_, b) -> (b.burn.amount, b.burn.reference)) burns)
+
+  -- 4. Housekeeping: a keeper returns the budget against the receipt.
+  (policyCid, _) <- currentPolicy w
+  _ <- submit (actAs w.m2 <> readAs w.issuer) do
+    exerciseCmd policyCid RedemptionPolicy_ReleaseRedeemed with
+      actor = w.m2; slotCid = receipt.slotCid; receiptCid = result.receiptCid
+  (_, released) <- currentPolicy w
+  shouldEqual "budget returned" (0.0, 0) (released.outstanding, released.openReservations)
+  shouldEqual "receipt is permanent" 1 . length =<< query @RedemptionReceipt w.investor
+
+-- | Redeeming part of a larger position returns the rest as change.
+test_partial_redemption_returns_change : Script ()
+test_partial_redemption_returns_change = do
+  w <- setupWorld
+  terms <- termsFor w w.investor "RED-002" 40.0 42.5
+  (approvedCid, approval) <- approved w terms
+  result <- mustSucceed "redeem" =<< tryRedeem w w.investor approvedCid approval
+  shouldEqual "shares left" 60.0 =<< unlockedBalance w.share w.investor
+  shouldEqual "cash paid" 42.5 =<< unlockedBalance w.cash w.investor
+  assertMsg "change holding returned" (result.shareChangeCid /= None)
+
+-- | The payout can go to a party other than the investor. The token standard
+-- needs the receiver's authority to execute an allocation, so the recipient
+-- co-submits the settlement; the investor alone cannot complete it, and the
+-- recipient alone cannot either.
+test_payout_to_a_separate_recipient : Script ()
+test_payout_to_a_separate_recipient = do
+  w <- setupWorld
+  base <- termsFor w w.investor "RED-003" 100.0 100.0
+  let terms = base with payoutRecipient = w.investor2
+  (approvedCid, approval) <- approved w terms
+  shareCids <- unlockedCids w.share w.investor
+  shareDisclosed <- registryDisclosures w.share
+  cashDisclosed <- registryDisclosures w.cash
+  allocationDisclosed <- allocationDisclosures w approval.allocationCid
+  let disclosed = discloseMany (shareDisclosed <> cashDisclosed <> allocationDisclosed)
+  let redeem = exerciseCmd approvedCid ApprovedRedemption_Redeem with
+        shareHoldingCids = shareCids
+        shareFactoryCid = w.share.allocationFactoryCid
+        burnExtraArgs = burnArgs w.share
+        payoutExtraArgs = transferArgs w.cash
+
+  mustFailWith "investor settling without the recipient" notAuthorized
+    =<< trySubmit (actAs w.investor <> disclosed) redeem
+  mustFailWith "recipient settling without the investor" notAuthorized
+    =<< trySubmit (actAs w.investor2 <> disclosed) redeem
+  shouldEqual "nothing burned yet" 100.0 =<< unlockedBalance w.share w.investor
+
+  result <- mustSucceed "joint settlement"
+    =<< trySubmit (actAs w.investor <> actAs w.investor2 <> disclosed) redeem
+  shouldEqual "investor's shares burned" 0.0 =<< balance w.share w.investor
+  shouldEqual "recipient paid" 100.0 =<< unlockedBalance w.cash w.investor2
+  shouldEqual "investor not paid" 0.0 =<< balance w.cash w.investor
+  Some receipt <- queryContractId w.investor2 result.receiptCid
+  shouldEqual "recipient sees the receipt" w.investor2 receipt.terms.payoutRecipient

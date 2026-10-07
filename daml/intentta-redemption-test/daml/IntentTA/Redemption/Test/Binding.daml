@@ -1,0 +1,170 @@
+-- Copyright (c) 2026 IntentTA contributors.
+-- SPDX-License-Identifier: Apache-2.0
+
+-- | Every approval is bound to the exact investor request and its terms, is
+-- always funded, and respects the issuer's policy limits.
+module IntentTA.Redemption.Test.Binding where
+
+import DA.Time (hours, minutes, addRelTime)
+import Daml.Script
+
+import IntentTA.Redemption.Approved
+import IntentTA.Redemption.Intent
+import IntentTA.Redemption.Policy
+import IntentTA.Redemption.Test.Setup
+
+-- | The committee cannot approve terms the investor did not sign: a larger
+-- payout, fewer shares or another recipient all fail at execution.
+test_vote_is_bound_to_the_signed_terms : Script ()
+test_vote_is_bound_to_the_signed_terms = do
+  w <- setupWorld
+  terms <- termsFor w w.investor "BND-001" 100.0 100.0
+  intentCid <- requestRedemption terms
+
+  mustFailWith "approving a different payout" "Request terms differ"
+    =<< tryApprove w intentCid (terms with payoutAmount = 150.0)
+  mustFailWith "approving a different share quantity" "Request terms differ"
+    =<< tryApprove w intentCid (terms with shareQuantity = 1.0)
+  mustFailWith "approving a different recipient" "Request terms differ"
+    =<< tryApprove w intentCid (terms with payoutRecipient = w.outsider)
+  mustFailWith "approving a later deadline" "Request terms differ"
+    =<< tryApprove w intentCid (terms with expiresAt = terms.expiresAt `addRelTime` hours 1)
+
+  shouldEqual "request still pending" 1 . length =<< query @InvestorIntent w.investor
+  shouldEqual "no approval" 0 . length =<< query @ApprovedRedemption w.investor
+  shouldEqual "no cash reserved" 1000.0 =<< unlockedBalance w.cash w.issuer
+
+-- | A request can be approved once. A second, fully confirmed proposal for
+-- the same request fails, and no second reservation is made.
+test_request_cannot_be_approved_twice : Script ()
+test_request_cannot_be_approved_twice = do
+  w <- setupWorld
+  terms <- termsFor w w.investor "BND-002" 100.0 100.0
+  intentCid <- requestRedemption terms
+
+  first <- proposeApproval w w.m1 intentCid terms
+  a1 <- confirm w first w.m1
+  a2 <- confirm w first w.m2
+  second <- proposeApproval w w.m2 intentCid terms
+  b1 <- confirm w second w.m2
+  b2 <- confirm w second w.m3
+
+  _ <- mustSucceed "first approval" =<< tryExecute w first [a1, a2] w.m1
+  mustFailWith "second approval of the same request" consumed =<< tryExecute w second [b1, b2] w.m2
+
+  -- A fresh proposal against the current policy and holdings fails too:
+  -- the request itself is gone.
+  mustFailWith "re-proposed approval of a consumed request" consumed =<< tryApprove w intentCid terms
+
+  shouldEqual "exactly one approval" 1 . length =<< query @ApprovedRedemption w.investor
+  shouldEqual "exactly one reservation" 900.0 =<< unlockedBalance w.cash w.issuer
+  (_, policy) <- currentPolicy w
+  shouldEqual "exactly one slot" (100.0, 1) (policy.outstanding, policy.openReservations)
+
+-- | If the treasury cannot fund the payout, there is no approval at all.
+test_unfunded_approval_is_rejected : Script ()
+test_unfunded_approval_is_rejected = do
+  w <- setupWorldWith 60.0 100.0
+  terms <- termsFor w w.investor "BND-003" 100.0 100.0
+  intentCid <- requestRedemption terms
+
+  mustFailWith "approval without enough cash" "not exceed total holding amount" =<< tryApprove w intentCid terms
+
+  shouldEqual "request still pending" 1 . length =<< query @InvestorIntent w.investor
+  shouldEqual "no approval appears" 0 . length =<< query @ApprovedRedemption w.investor
+  shouldEqual "treasury untouched" 60.0 =<< unlockedBalance w.cash w.issuer
+  (_, policy) <- currentPolicy w
+  shouldEqual "no slot left behind" (0.0, 0) (policy.outstanding, policy.openReservations)
+
+-- | The per-redemption and outstanding-reservation limits hold, and budget
+-- comes back when a reservation is released.
+test_policy_limits : Script ()
+test_policy_limits = do
+  w <- setupWorldWith 5000.0 100.0
+
+  tooBig <- termsFor w w.investor "BND-004a" 10.0 501.0
+  tooBigCid <- requestRedemption tooBig
+  mustFailWith "payout above the per-redemption limit" "per-redemption limit"
+    =<< tryApprove w tooBigCid tooBig
+
+  -- 400 fits; a further 300 would take the total to 700, above the 600 cap.
+  first <- termsFor w w.investor "BND-004b" 10.0 400.0
+  (firstCid, _) <- approved w first
+  second <- termsFor w w.investor "BND-004c" 10.0 300.0
+  secondCid <- requestRedemption second
+  mustFailWith "reservation above the outstanding cap" "Outstanding-reservation limit reached"
+    =<< tryApprove w secondCid second
+  shouldEqual "only the first is reserved" 4600.0 =<< unlockedBalance w.cash w.issuer
+
+  -- Releasing the first reservation frees the budget for the second.
+  cleanupCid <- submit w.investor $ exerciseCmd firstCid ApprovedRedemption_Cancel
+  _ <- releaseCleanup w cleanupCid
+  _ <- mustSucceed "approval after budget was released" =<< tryApprove w secondCid second
+  (_, policy) <- currentPolicy w
+  shouldEqual "policy totals" (300.0, 1) (policy.outstanding, policy.openReservations)
+
+-- | Approval lifetime is bounded twice: by the policy's TTL and by the
+-- investor's own deadline, whichever is earlier.
+test_approval_expiry_is_bounded : Script ()
+test_approval_expiry_is_bounded = do
+  w <- setupWorld
+  now <- getTime
+
+  -- Investor allows 24h, policy allows 2h: the approval lasts 2h.
+  long <- termsFor w w.investor "BND-005a" 10.0 10.0
+  (_, a1) <- approved w long
+  shouldEqual "bounded by the policy TTL" (a1.approvedAt `addRelTime` hours 2) a1.expiresAt
+
+  -- Investor allows 30 minutes: the approval lasts 30 minutes.
+  short <- termsFor w w.investor "BND-005b" 10.0 10.0
+  let shortTerms = short with expiresAt = now `addRelTime` minutes 30
+  (_, a2) <- approved w shortTerms
+  shouldEqual "bounded by the investor's deadline" (now `addRelTime` minutes 30) a2.expiresAt
+
+  -- No policy may allow more than the hard ceiling.
+  (policyCid, policy) <- currentPolicy w
+  mustFailWith "policy TTL above the ceiling" precondition =<< trySubmit w.issuer do
+    exerciseCmd policyCid RedemptionPolicy_SetLimits with
+      newKeepers = policy.keepers
+      newMaxApprovalTtl = hours (24 * 30)
+      newMaxPerRedemption = policy.maxPerRedemption
+      newMaxOutstanding = policy.maxOutstanding
+
+-- | A request the investor withdrew, or that passed its deadline, cannot be
+-- approved.
+test_withdrawn_or_expired_request_cannot_be_approved : Script ()
+test_withdrawn_or_expired_request_cannot_be_approved = do
+  w <- setupWorld
+
+  withdrawn <- termsFor w w.investor "BND-006a" 100.0 100.0
+  withdrawnCid <- requestRedemption withdrawn
+  proposalCid <- proposeApproval w w.m1 withdrawnCid withdrawn
+  c1 <- confirm w proposalCid w.m1
+  c2 <- confirm w proposalCid w.m2
+  submit w.investor $ exerciseCmd withdrawnCid InvestorIntent_Cancel
+  mustFailWith "approving a withdrawn request" consumed =<< tryExecute w proposalCid [c1, c2] w.m3
+
+  stale <- termsFor w w.investor "BND-006b" 100.0 100.0
+  staleCid <- requestRedemption stale
+  passTime (hours 25)
+  mustFailWith "approving an expired request" "Redemption request has expired"
+    =<< tryApprove w staleCid stale
+
+  shouldEqual "no approval" 0 . length =<< query @ApprovedRedemption w.investor
+  shouldEqual "no cash reserved" 1000.0 =<< unlockedBalance w.cash w.issuer
+
+-- | Malformed requests are rejected when the investor creates them.
+test_malformed_requests_are_rejected : Script ()
+test_malformed_requests_are_rejected = do
+  w <- setupWorld
+  terms <- termsFor w w.investor "BND-007" 100.0 100.0
+  let reject label bad = mustFailWith label precondition =<< trySubmit w.investor (createCmd InvestorIntent with terms = bad)
+  reject "zero shares" (terms with shareQuantity = 0.0)
+  reject "negative payout" (terms with payoutAmount = -1.0)
+  reject "empty request id" (terms with requestId = "")
+  reject "share instrument not administered by the issuer"
+    (terms with shareInstrument = terms.cashInstrument)
+  reject "issuer as recipient" (terms with payoutRecipient = w.issuer)
+  -- Nobody can file a request in another investor's name.
+  mustFailWith "request on behalf of another investor" notAuthorized
+    =<< trySubmit w.outsider (createCmd InvestorIntent with terms)
